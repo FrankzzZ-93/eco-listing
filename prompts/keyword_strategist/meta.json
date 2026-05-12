@@ -1,0 +1,5 @@
+{
+  "templates": {
+    "classify": { "active": "v2", "model": "claude-sonnet" }
+  }
+}

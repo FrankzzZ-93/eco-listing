@@ -1,0 +1,5 @@
+{
+  "templates": {
+    "rufus_extract": { "active": "v1", "model": "gemini-pro" }
+  }
+}

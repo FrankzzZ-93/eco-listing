@@ -1,0 +1,6 @@
+{
+  "templates": {
+    "info_fusion": { "active": "v2", "model": "gemini-pro" },
+    "self_eval":   { "active": "v2", "model": "claude-sonnet" }
+  }
+}

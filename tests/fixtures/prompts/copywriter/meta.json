@@ -1,0 +1,1 @@
+{"templates": {"round_1_draft": {"active": "v1", "model": "gemini-pro"}, "round_2_rufus": {"active": "v1", "model": "claude-sonnet"}, "round_3_compliance": {"active": "v1", "model": "claude-sonnet"}}}

@@ -1,0 +1,59 @@
+from app.tools.compliance_tool import ComplianceTool
+
+
+class TestComplianceValidate:
+    def setup_method(self):
+        self.tool = ComplianceTool()
+
+    def test_valid_listing(self):
+        listing = {
+            "title": "Premium Widget for Home Use",
+            "bullet_points": ["Feature 1", "Feature 2"],
+            "description": "A great product for daily use.",
+        }
+        assert self.tool.validate(listing) == []
+
+    def test_title_too_long(self):
+        listing = {
+            "title": "A" * 201,
+            "bullet_points": [],
+            "description": "",
+        }
+        violations = self.tool.validate(listing)
+        assert any("标题超长" in v for v in violations)
+
+    def test_bullet_too_long(self):
+        listing = {
+            "title": "OK Title",
+            "bullet_points": ["B" * 501],
+            "description": "",
+        }
+        violations = self.tool.validate(listing)
+        assert any("Bullet #1 超长" in v for v in violations)
+
+    def test_forbidden_word_best(self):
+        listing = {
+            "title": "The best product ever",
+            "bullet_points": [],
+            "description": "",
+        }
+        violations = self.tool.validate(listing)
+        assert any('"best"' in v for v in violations)
+
+    def test_forbidden_word_free(self):
+        listing = {
+            "title": "Get it free today",
+            "bullet_points": [],
+            "description": "",
+        }
+        violations = self.tool.validate(listing)
+        assert any('"free"' in v for v in violations)
+
+    def test_multiple_violations(self):
+        listing = {
+            "title": "A" * 250 + " best product guaranteed",
+            "bullet_points": [],
+            "description": "",
+        }
+        violations = self.tool.validate(listing)
+        assert len(violations) >= 3  # title length + best + guaranteed

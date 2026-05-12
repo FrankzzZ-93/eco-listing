@@ -1,0 +1,17 @@
+{
+  "$schema": "https://developers.openai.com/codex/schemas/codex.json",
+  "model": "o3",
+  "approval_mode": "auto-edit",
+  "providers": {
+    "openai": {
+      "name": "OpenAI"
+    }
+  },
+  "instructions": "You are a browser automation assistant for an Amazon product research tool. Your primary tasks are:\n1. Navigate to Amazon product pages and extract listing content (title, bullet points, description, A+ content)\n2. Interact with Rufus Q&A sections (expand, click 'show more', extract Q&A pairs)\n3. Scrape customer reviews from product review pages\n\nAlways return results as valid JSON. Never include markdown fences in your output.",
+  "plugins": {
+    "computer-use": {
+      "enabled": true,
+      "browser": "chromium"
+    }
+  }
+}

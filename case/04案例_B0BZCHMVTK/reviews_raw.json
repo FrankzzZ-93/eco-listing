@@ -1,0 +1,14 @@
+{
+  "reviews": [
+    {
+      "rating": 4,
+      "title": "Bright and Fun Balloons for Any Celebration!",
+      "body": "These Bezente Assorted Rainbow Balloons really made our party pop with color! The 12-inch size is perfect for decorations, and the rainbow assortment looks cheerful and vibrant once inflated. They hold helium well and float for quite a while, which is great for birthdays and events. The latex quality feels decent — most balloons inflated easily without popping. However, a few had slight inconsistencies in size and thickness, which is why I’m giving 4 stars instead of 5. Overall, they’re colorful, durable, and a great value for money, perfect for weddings, showers, or festive gatherings!"
+    }
+  ],
+  "sources": [
+    "https://www.amazon.com/product-reviews/B0BZCHMVTK",
+    "https://albania.desertcart.com/products/534426416-bezente-assorted-rainbow-latex-balloons-100-pack-12-inch-round-helium-bright-color-balloons-for-birthday-bridal-shower-wedding-party-decorationscarbonfree-certified"
+  ],
+  "note": "Amazon could not be opened directly from this environment, and most accessible snippets did not expose per-review star ratings. I only included the review whose rating was explicitly visible in the extracted text."
+}

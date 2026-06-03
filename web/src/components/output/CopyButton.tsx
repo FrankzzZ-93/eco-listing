@@ -17,7 +17,7 @@ export default function CopyButton({ text, size = 'small' }: Props) {
   };
 
   return (
-    <Tooltip title={copied ? 'Copied!' : 'Copy'}>
+    <Tooltip title={copied ? '已复制' : '复制'}>
       <Button
         size={size}
         type="text"

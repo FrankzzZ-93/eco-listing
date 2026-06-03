@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import subprocess
-import shutil
 from typing import Any
 
-from app.config import settings
+from app.tools.codex_exec import CodexExecError, codex_exec
 
 logger = logging.getLogger(__name__)
 
-CODEX_BIN = shutil.which("codex") or "codex"
 
-
-class CodexToolError(Exception):
-    pass
+class CodexToolError(CodexExecError):
+    """Backwards-compatible alias for callers catching tool-level errors."""
 
 
 class CodexTool:
@@ -25,10 +20,11 @@ class CodexTool:
 
     Uses the CLI in JSON-lines mode so that the output is machine-parseable.
     Falls back to raw text parsing when JSON output is unavailable.
-    """
 
-    def __init__(self, timeout: int | None = None):
-        self.timeout = timeout or settings.codex_timeout
+    Timeout is controlled globally via ``settings.codex_timeout`` (see
+    ``app/tools/codex_exec.py``); there is no per-instance override on purpose
+    so that the configuration stays in one place.
+    """
 
     async def browse_and_extract(
         self,
@@ -62,7 +58,10 @@ class CodexTool:
         )
 
         raw = await self._exec(prompt)
-        return self._parse_json(raw)
+        logger.warning("Codex browse_and_extract raw (%d bytes): %s", len(raw), raw[:500])
+        result = self._parse_json(raw)
+        logger.warning("Codex browse_and_extract parsed keys=%s, preview=%s", list(result.keys()) if isinstance(result, dict) else type(result), str(result)[:300])
+        return result
 
     async def interact_and_extract(
         self,
@@ -92,71 +91,79 @@ class CodexTool:
         return self._parse_json(raw)
 
     async def _exec(self, prompt: str) -> str:
-        """Run `codex exec` as a subprocess and return stdout."""
-        cmd = [
-            CODEX_BIN,
-            "exec",
-            "--json",
-            prompt,
-        ]
+        """Run `codex exec` and return stdout. Delegates to the shared runner.
 
-        logger.info("CodexTool exec: %s...", prompt[:120])
-
+        Re-raises low-level errors as ``CodexToolError`` so existing
+        ``except CodexToolError`` callers still catch them.
+        """
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=None,  # inherit parent env (OPENAI_API_KEY etc.)
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise CodexToolError(
-                f"Codex exec timed out after {self.timeout}s"
-            )
-        except FileNotFoundError:
-            raise CodexToolError(
-                "Codex CLI binary not found. Install with: npm install -g @openai/codex"
-            )
-
-        if proc.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            raise CodexToolError(f"Codex exec failed (rc={proc.returncode}): {err_msg}")
-
-        return stdout.decode(errors="replace").strip()
+            return await codex_exec(prompt)
+        except CodexExecError as e:
+            raise CodexToolError(str(e)) from e
 
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any]:
-        """Parse JSON from Codex output, handling JSONL format."""
-        # codex exec --json outputs JSON Lines; take the last meaningful line
+        """Parse JSON from Codex --json JSONL output.
+
+        Codex exec --json emits JSONL events. The agent's final answer lives in
+        the last `item.completed` event where `item.type == "agent_message"`.
+        Other item types (web_search, command_execution, mcp_tool_call) are tool
+        invocations and should be skipped.
+        """
         lines = [l for l in raw.splitlines() if l.strip()]
 
-        # Try parsing the full output as a single JSON object first
+        # 1) Look for agent_message item.completed events (the LLM's final answer)
+        for line in reversed(lines):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") == "item.completed":
+                item = obj.get("item") or {}
+                item_type = item.get("type", "")
+                if item_type not in ("agent_message", "message"):
+                    continue
+                text = item.get("text", "")
+                if text:
+                    text = text.strip()
+                    if text.startswith("```"):
+                        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        logger.warning("item.completed text is not valid JSON: %s", text[:300])
+                        return {"text": text}
+
+        # 2) Fallback: try parsing full output as a single JSON object
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             pass
 
-        # Try each line from the end (last line is usually the final response)
+        # 3) Fallback: try each line from end, skip non-data events
+        skip_types = {
+            "turn.started", "turn.completed", "thread.started",
+            "item.started", "item.completed",
+        }
         for line in reversed(lines):
             try:
                 obj = json.loads(line)
-                # Look for the response content in known structures
-                if isinstance(obj, dict):
-                    if "message" in obj:
-                        content = obj["message"]
-                        if isinstance(content, str):
-                            try:
-                                return json.loads(content)
-                            except json.JSONDecodeError:
-                                return {"text": content}
-                        return content
-                    return obj
             except json.JSONDecodeError:
                 continue
+            if isinstance(obj, dict):
+                if obj.get("type") in skip_types:
+                    continue
+                if "message" in obj:
+                    content = obj["message"]
+                    if isinstance(content, str):
+                        try:
+                            return json.loads(content)
+                        except json.JSONDecodeError:
+                            return {"text": content}
+                    return content
+                return obj
 
-        # Last resort: return raw text
+        logger.warning("_parse_json: no parseable data found in %d lines", len(lines))
         return {"text": raw}

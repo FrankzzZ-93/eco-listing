@@ -1,23 +1,12 @@
+"""LLM tool backed by Codex CLI — uses the locally logged-in account."""
 from __future__ import annotations
 
-import base64
 import json
+import logging
 
-import litellm
-from tenacity import retry, stop_after_attempt, wait_exponential
+from app.tools.codex_exec import codex_exec
 
-from app.config import settings
-
-MODEL_MAP = {
-    "gemini-pro": "gemini/gemini-1.5-pro",
-    "claude-sonnet": "anthropic/claude-sonnet-4-20250514",
-    "gpt-4o": "gpt-4o",
-}
-
-FALLBACK = {
-    "gemini-pro": "gpt-4o",
-    "claude-sonnet": "gpt-4o",
-}
+logger = logging.getLogger(__name__)
 
 
 class LLMTool:
@@ -31,55 +20,87 @@ class LLMTool:
         attachments: list[str] | None = None,
         response_format: str = "json",
     ) -> dict:
-        try:
-            return await self._invoke(model, prompt, attachments, response_format)
-        except Exception:
-            fallback = FALLBACK.get(model)
-            if fallback:
-                return await self._invoke(
-                    fallback, prompt, attachments, response_format
-                )
-            raise
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=2, max=30),
-        reraise=True,
-    )
-    async def _invoke(self, model, prompt, attachments, response_format) -> dict:
-        messages = self._build_messages(prompt, attachments)
-        response = await litellm.acompletion(
-            model=MODEL_MAP[model],
-            messages=messages,
-            timeout=settings.llm_timeout,
-            response_format=(
-                {"type": "json_object"} if response_format == "json" else None
-            ),
-        )
-        content = response.choices[0].message.content
-        self.total_tokens += response.usage.total_tokens
+        if attachments:
+            prompt = self._append_attachment_note(prompt, attachments)
 
         if response_format == "json":
-            return json.loads(content)
-        return {"text": content}
-
-    def _build_messages(self, prompt, attachments):
-        parts: list[dict] = [{"type": "text", "text": prompt}]
-        for path in attachments or []:
-            parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": self._encode_image(path)},
-                }
+            prompt += (
+                "\n\n⚠️ CRITICAL: Output ONLY a single valid JSON object. "
+                "No markdown fences, no explanation, no text before or after the JSON."
             )
-        return [{"role": "user", "content": parts}]
+
+        raw = await self._codex_exec(prompt)
+        parsed = self._parse_response(raw, response_format)
+        return parsed
+
+    async def _codex_exec(self, prompt: str) -> str:
+        """Delegates to the shared `codex_exec` runner.
+
+        Timeout is governed exclusively by ``settings.codex_timeout``; this
+        method intentionally does not accept or read a per-tool timeout.
+        """
+        logger.warning("LLMTool codex exec: %s...", prompt[:150])
+        return await codex_exec(prompt)
+
+    def _parse_response(self, raw: str, response_format: str) -> dict:
+        lines = [l for l in raw.splitlines() if l.strip()]
+
+        for line in reversed(lines):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") == "item.completed":
+                item = obj.get("item") or {}
+                if item.get("type") not in ("agent_message", "message"):
+                    continue
+                text = (item.get("text") or "").strip()
+                if not text:
+                    continue
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                if response_format == "json":
+                    return self._extract_json(text)
+                return {"text": text}
+
+        if response_format == "json":
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("LLMTool: no parseable response in %d lines, returning raw", len(lines))
+        return {"text": raw}
 
     @staticmethod
-    def _encode_image(path: str) -> str:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        ext = path.rsplit(".", 1)[-1].lower()
-        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(
-            ext, "image/png"
-        )
-        return f"data:{mime};base64,{b64}"
+    def _extract_json(text: str) -> dict:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to find JSON object boundaries
+        start = text.find("{")
+        if start >= 0:
+            depth = 0
+            for i, ch in enumerate(text[start:], start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start : i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        return {"text": text}
+
+    @staticmethod
+    def _append_attachment_note(prompt: str, attachments: list[str]) -> str:
+        note = "\n\n[Note: This task references image files that cannot be included in text mode. "
+        note += f"Files: {', '.join(attachments)}. "
+        note += "Please proceed based on the text information provided.]"
+        return prompt + note

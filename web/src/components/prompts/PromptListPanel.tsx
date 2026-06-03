@@ -1,6 +1,14 @@
 import { Table, Tag } from 'antd';
 import type { PromptMeta } from '../../types/prompt';
 
+const AGENT_LABELS: Record<string, string> = {
+  research: '数据采集',
+  product_analyst: '产品分析',
+  keyword_strategist: '关键词策略',
+  copywriter: '文案撰写',
+  orchestrator: '调度器',
+};
+
 interface Props {
   prompts: PromptMeta[];
   selectedKey: string | null;
@@ -13,24 +21,24 @@ export default function PromptListPanel({ prompts, selectedKey, onSelect }: Prop
       title: 'Agent',
       dataIndex: 'agent',
       key: 'agent',
-      width: 140,
-      render: (agent: string) => agent.replace('_', ' '),
+      width: 120,
+      render: (agent: string) => AGENT_LABELS[agent] ?? agent,
     },
     {
-      title: 'Prompt',
+      title: '提示词',
       dataIndex: 'filename',
       key: 'filename',
     },
     {
-      title: 'Status',
+      title: '状态',
       dataIndex: 'modified',
       key: 'modified',
-      width: 100,
+      width: 90,
       render: (modified: boolean) =>
         modified ? (
-          <Tag color="orange">Modified *</Tag>
+          <Tag color="orange">已修改</Tag>
         ) : (
-          <Tag color="default">Default</Tag>
+          <Tag color="default">默认</Tag>
         ),
     },
   ];
@@ -41,6 +49,7 @@ export default function PromptListPanel({ prompts, selectedKey, onSelect }: Prop
       dataSource={prompts.map((p) => ({ ...p, key: `${p.agent}/${p.name}` }))}
       size="small"
       pagination={false}
+      locale={{ emptyText: '暂无提示词' }}
       rowClassName={(record) =>
         `${record.agent}/${record.name}` === selectedKey ? 'ant-table-row-selected' : ''
       }

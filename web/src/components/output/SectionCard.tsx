@@ -8,7 +8,7 @@ interface Props {
   content: string;
   currentCount: number;
   maxCount: number;
-  unit: 'chars' | 'bytes';
+  unit: string;
   children?: React.ReactNode;
 }
 

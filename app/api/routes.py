@@ -4,16 +4,33 @@ import asyncio
 import datetime
 import json
 import os
+import re
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.config import settings
 from app.memory.shared_memory import MemoryHelper
+from app.tools import codex_progress
 
 router = APIRouter(prefix="/api")
 
 PROMPTS_DIR = "prompts"
+
+# Per-run lock serializing graph-state read-modify-write operations. Without
+# it, concurrent uploads (e.g. several files posted in parallel) each read the
+# same checkpoint and write back, so the last writer clobbers the others'
+# channels (this is how an uploaded keyword_library could silently vanish).
+_run_state_locks: dict[str, asyncio.Lock] = {}
+
+
+def _run_state_lock(run_id: str) -> asyncio.Lock:
+    lock = _run_state_locks.get(run_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _run_state_locks[run_id] = lock
+    return lock
 
 
 # --- Request / Response models ---
@@ -40,20 +57,125 @@ class UpdatePromptRequest(BaseModel):
 
 @router.post("/runs", status_code=201)
 async def create_run(req: CreateRunRequest):
-    from app.api._state import get_graph, get_toolbox
+    from app.api._state import register_run
 
     if not req.competitor_asins or len(req.competitor_asins) > 10:
         raise HTTPException(400, "需要 1~10 个 ASIN")
 
     run_id = f"run_{datetime.date.today():%Y%m%d}_{uuid.uuid4().hex[:6]}"
+    register_run(run_id, req.product_name, req.site, req.competitor_asins)
+
+    graph = _get_graph()
     initial_state = {
         "run_id": run_id,
+        "product_name": req.product_name,
         "competitor_asins": req.competitor_asins,
-        "status": "running",
+        "site": req.site,
+        "status": "pending",
+        "length_limits": {
+            "title_max_chars": settings.title_max_chars,
+            "bullet_max_chars": settings.bullet_max_chars,
+            "bullets_total_max_bytes": settings.bullets_total_max_bytes,
+            "description_max_chars": settings.description_max_chars,
+            "st_max_bytes": settings.st_max_bytes,
+            "title_min_chars": settings.title_min_chars,
+            "bullets_total_min_bytes": settings.bullets_total_min_bytes,
+            "description_min_chars": settings.description_min_chars,
+        },
     }
+    config = {"configurable": {"thread_id": run_id}}
+    await graph.aupdate_state(config, initial_state, as_node="__start__")
 
-    asyncio.create_task(_run_graph(run_id, initial_state))
-    return {"run_id": run_id, "status": "running"}
+    return {"run_id": run_id, "status": "pending"}
+
+
+@router.post("/runs/{run_id}/start")
+async def start_run(run_id: str):
+    """Start graph execution after files have been uploaded."""
+    from app.api._state import get_run_task, set_run_task, update_run_status
+
+    existing = get_run_task(run_id)
+    if existing and not existing.done():
+        raise HTTPException(409, "任务已在运行中")
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "任务不存在")
+
+    task = asyncio.create_task(_run_graph_from_state(run_id))
+    set_run_task(run_id, task)
+    update_run_status(run_id, "running")
+    return {"status": "running"}
+
+
+@router.get("/runs")
+async def list_runs():
+    from app.api._state import list_runs as _list_runs
+
+    runs = _list_runs()
+    graph = _get_graph()
+
+    progress_keys = [
+        ("competitor_listings", "竞品数据采集"),
+        ("product_attributes_draft", "产品属性分析"),
+        ("approved_product_attributes", "人工审核"),
+        ("keyword_library", "关键词审核"),
+        ("classified_keywords", "关键词分类"),
+        ("final_listing", "Listing 文案生成"),
+        ("final_st", "ST 词频优化"),
+    ]
+    total_steps = len(progress_keys)
+
+    results = []
+    for meta in runs:
+        rid = meta["run_id"]
+        status = "unknown"
+        completed_steps = 0
+        current_step = ""
+        current_agent = None
+
+        try:
+            config = {"configurable": {"thread_id": rid}}
+            state = await graph.aget_state(config)
+            if state and state.values:
+                snapshot = state.values
+                status = snapshot.get("status", "running")
+                next_nodes = state.next if state.next else ()
+                if next_nodes and any(
+                    n in next_nodes
+                    for n in ("wait_upload", "human_review", "keyword_upload", "keyword_review")
+                ):
+                    status = "waiting_human"
+
+                for key, label in progress_keys:
+                    if MemoryHelper.has(snapshot, key):
+                        completed_steps += 1
+                    elif not current_step:
+                        current_step = label
+
+                current_agent = snapshot.get("current_agent")
+                if not current_agent:
+                    last_logs = snapshot.get("agent_log", [])
+                    if last_logs:
+                        current_agent = last_logs[-1].get("agent")
+
+                if not current_step and status == "running":
+                    current_step = progress_keys[0][1]
+        except Exception:
+            pass
+
+        results.append({
+            **meta,
+            "status": status,
+            "completed_steps": completed_steps,
+            "total_steps": total_steps,
+            "current_step": current_step,
+            "current_agent": current_agent,
+        })
+
+    return results
 
 
 @router.get("/runs/{run_id}")
@@ -67,31 +189,95 @@ async def get_run(run_id: str):
     snapshot = state.values
     next_nodes = state.next if state.next else ()
 
-    if next_nodes and any(n in next_nodes for n in ("wait_upload", "human_review", "keyword_upload")):
+    if next_nodes and any(n in next_nodes for n in ("wait_upload", "human_review", "keyword_upload", "keyword_review")):
         effective_status = "waiting_human"
         pending = _pending_action_for(next_nodes)
     else:
         effective_status = snapshot.get("status", "running")
         pending = snapshot.get("pending_action")
 
+    mem_keys = [
+        "competitor_listings",
+        "customer_reviews",
+        "review_summary",
+        "rufus_questions",
+        "product_attributes_draft",
+        "approved_product_attributes",
+        "keyword_library",
+        "classified_keywords",
+        "final_listing",
+        "final_st",
+    ]
+
+    current_agent = snapshot.get("current_agent")
+    if not current_agent and effective_status == "running":
+        last_logs = snapshot.get("agent_log", [])
+        if last_logs:
+            current_agent = last_logs[-1].get("agent")
+
+    mem_snapshot = {
+        f"has_{key}": MemoryHelper.has(snapshot, key)
+        for key in mem_keys
+    }
+    has_kw = mem_snapshot.get("has_keyword_library", False)
+    nodes_after_review = {"keyword_classify", "copywriter", "st_optimize", "export"}
+    past_review = (
+        MemoryHelper.has(snapshot, "classified_keywords")
+        or (bool(next_nodes) and any(n in next_nodes for n in nodes_after_review))
+    )
+    mem_snapshot["has_keywords_reviewed"] = has_kw and past_review
+
+    live_codex = None
+    if effective_status == "running":
+        try:
+            live_codex = codex_progress.snapshot(run_id)
+        except Exception:
+            live_codex = None
+
     return {
         "run_id": run_id,
         "status": effective_status,
+        "current_agent": current_agent,
         "next_step": list(next_nodes) if next_nodes else None,
-        "memory_snapshot": {
-            key: MemoryHelper.has(snapshot, key)
-            for key in [
-                "competitor_listings",
-                "review_summary",
-                "approved_product_attributes",
-                "classified_keywords",
-                "final_listing",
-                "final_st",
-            ]
-        },
+        "memory_snapshot": mem_snapshot,
         "pending_action": pending,
         "agent_log": snapshot.get("agent_log", [])[-20:],
+        "error": snapshot.get("error") or None,
+        "live_codex": live_codex,
     }
+
+
+_VIEWABLE_KEYS = frozenset([
+    "competitor_listings",
+    "customer_reviews",
+    "review_summary",
+    "rufus_questions",
+    "product_attributes_draft",
+    "approved_product_attributes",
+    "keyword_library",
+    "classified_keywords",
+    "final_listing",
+    "final_st",
+    "word_frequency_report",
+])
+
+
+@router.get("/runs/{run_id}/data/{key}")
+async def get_run_data(run_id: str, key: str):
+    if key not in _VIEWABLE_KEYS:
+        raise HTTPException(400, f"不支持查看的数据键: {key}")
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    value = state.values.get(key)
+    if value is None:
+        raise HTTPException(404, f"数据 '{key}' 尚未产出")
+
+    return {"key": key, "data": value}
 
 
 def _pending_action_for(next_nodes) -> dict:
@@ -99,13 +285,17 @@ def _pending_action_for(next_nodes) -> dict:
         return {"type": "upload_competitor_data", "message": "请上传竞品 Listing JSON"}
     if "human_review" in next_nodes:
         return {"type": "review_product_attributes", "message": "请审核产品属性"}
+    if "keyword_review" in next_nodes:
+        return {"type": "review_keywords", "message": "请审核关键词词库"}
     if "keyword_upload" in next_nodes:
-        return {"type": "upload_keywords", "message": "请上传关键词 JSON"}
+        return {"type": "upload_keywords", "message": "请上传关键词词库"}
     return {}
 
 
 @router.put("/runs/{run_id}/review")
 async def submit_review(run_id: str, req: SubmitReviewRequest):
+    from app.api._state import set_run_task
+
     graph = _get_graph()
     config = {"configurable": {"thread_id": run_id}}
     update = {
@@ -114,8 +304,138 @@ async def submit_review(run_id: str, req: SubmitReviewRequest):
         "pending_action": {},
     }
     await graph.aupdate_state(config, update)
-    asyncio.create_task(_resume_graph(run_id))
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
     return {"status": "accepted"}
+
+
+class SubmitKeywordReviewRequest(BaseModel):
+    approved_keywords: list[dict]
+
+
+@router.put("/runs/{run_id}/keyword-review")
+async def submit_keyword_review(run_id: str, req: SubmitKeywordReviewRequest):
+    """Save reviewed keyword library and resume the graph."""
+    from app.api._state import set_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    update = {
+        "keyword_library": req.approved_keywords,
+        "status": "running",
+        "pending_action": {},
+    }
+    await graph.aupdate_state(config, update)
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "accepted", "keyword_count": len(req.approved_keywords)}
+
+
+@router.post("/runs/{run_id}/reset-to-keyword-review")
+async def reset_to_keyword_review(run_id: str):
+    """Force a run back to the keyword_review interrupt point."""
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    await graph.aupdate_state(config, {
+        "status": "running",
+        "pending_action": {},
+    }, as_node="keyword_upload")
+    state = await graph.aget_state(config)
+    return {"status": "ok", "next": list(state.next) if state.next else []}
+
+
+@router.post("/runs/{run_id}/pause")
+async def pause_run(run_id: str):
+    """Pause a running task by cancelling the asyncio task and setting status to paused."""
+    from app.api._state import get_run_task, remove_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    current_status = state.values.get("status", "unknown")
+    if current_status not in ("running",):
+        raise HTTPException(400, f"无法暂停状态为 {current_status} 的任务")
+
+    task = get_run_task(run_id)
+    if task and not task.done():
+        task.cancel()
+    remove_run_task(run_id)
+
+    await graph.aupdate_state(config, {"status": "paused"})
+    return {"status": "paused"}
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str):
+    """Resume a paused or stale-running task."""
+    from app.api._state import get_run_task, set_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    current_status = state.values.get("status", "unknown")
+    existing_task = get_run_task(run_id)
+    task_alive = existing_task is not None and not existing_task.done()
+
+    if current_status == "running" and task_alive:
+        raise HTTPException(400, "任务正在执行中，无需恢复")
+
+    if current_status not in ("paused", "running", "failed"):
+        raise HTTPException(400, f"只能恢复暂停、中断或失败的任务，当前状态: {current_status}")
+
+    await graph.aupdate_state(config, {"status": "running", "error": ""})
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "running"}
+
+
+@router.post("/runs/{run_id}/stop")
+async def stop_run(run_id: str):
+    """Stop a running or paused task permanently."""
+    from app.api._state import get_run_task, remove_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    current_status = state.values.get("status", "unknown")
+    if current_status in ("completed", "failed", "stopped"):
+        raise HTTPException(400, f"任务已经是终态: {current_status}")
+
+    task = get_run_task(run_id)
+    if task and not task.done():
+        task.cancel()
+    remove_run_task(run_id)
+
+    update_kwargs = {"as_node": "__start__"} if current_status == "pending" else {}
+    await graph.aupdate_state(config, {"status": "stopped"}, **update_kwargs)
+    return {"status": "stopped"}
+
+
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    """Delete a run from the registry."""
+    from app.api._state import get_run_meta, get_run_task, remove_run_task, remove_run
+
+    meta = get_run_meta(run_id)
+    if not meta:
+        raise HTTPException(404, "Run not found")
+
+    task = get_run_task(run_id)
+    if task and not task.done():
+        task.cancel()
+    remove_run_task(run_id)
+
+    remove_run(run_id)
+    return {"status": "deleted"}
 
 
 @router.put("/runs/{run_id}/upload")
@@ -129,37 +449,86 @@ async def upload_data(
     config = {"configurable": {"thread_id": run_id}}
     content = await file.read()
 
-    if file.filename and file.filename.endswith(".json"):
-        data = json.loads(content)
-        if data_type == "keywords" or (
-            data_type == "auto" and "keyword" in str(data)[:200]
-        ):
-            cleaned = toolbox.keyword.clean(data)
-            update = {
-                "keyword_library": cleaned,
-                "status": "running",
-                "pending_action": {},
-            }
-        else:
-            update = {
-                "competitor_listings": data,
-                "status": "running",
-                "pending_action": {},
-            }
-        await graph.aupdate_state(config, update)
-        asyncio.create_task(_resume_graph(run_id))
+    # Serialize state mutations for this run so parallel uploads can't clobber
+    # each other's channels (lost-update race on the shared checkpoint).
+    async with _run_state_lock(run_id):
+        cur_state = await graph.aget_state(config)
+        is_pending = cur_state and cur_state.values and cur_state.values.get("status") == "pending"
+        update_kwargs = {"as_node": "__start__"} if is_pending else {}
 
-    elif file.filename and file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-        save_path = toolbox.file_store.run_dir(run_id) + f"/{file.filename}"
-        with open(save_path, "wb") as f:
-            f.write(content)
-        state = await graph.aget_state(config)
-        existing = state.values.get("rufus_screenshots", []) if state else []
-        existing.append(save_path)
-        await graph.aupdate_state(config, {"rufus_screenshots": existing})
-        return {"status": "accepted", "saved": save_path}
-    else:
-        raise HTTPException(400, "支持 .json / .png / .jpg 文件")
+        next_nodes = cur_state.next if cur_state and cur_state.next else ()
+        is_waiting_keyword = "keyword_upload" in next_nodes
+
+        if file.filename and file.filename.lower().endswith(".xlsx") and data_type in ("keywords", "auto"):
+            cleaned = toolbox.keyword.clean(content)
+            update: dict = {"keyword_library": cleaned}
+            if not is_pending:
+                update.update({"status": "running", "pending_action": {}})
+            await graph.aupdate_state(config, update, **update_kwargs)
+            if is_waiting_keyword:
+                await _auto_resume_after_keyword(run_id)
+            return {"status": "accepted", "keywords_count": len(cleaned)}
+
+        if file.filename and file.filename.endswith(".json"):
+            data = json.loads(content)
+
+            if data_type == "keywords" or (
+                data_type == "auto" and "keyword" in str(data)[:200]
+            ):
+                cleaned = toolbox.keyword.clean(data)
+                update = {"keyword_library": cleaned}
+                if not is_pending:
+                    update.update({"status": "running", "pending_action": {}})
+            elif data_type == "reviews":
+                items = data if isinstance(data, list) else [data]
+                existing_reviews = list(cur_state.values.get("customer_reviews", [])) if cur_state and cur_state.values else []
+                existing_reviews.extend(items)
+                update = {"customer_reviews": existing_reviews}
+            elif data_type == "listings":
+                items = data if isinstance(data, list) else [data]
+                existing_listings = list(cur_state.values.get("competitor_listings", [])) if cur_state and cur_state.values else []
+                existing_listings.extend(items)
+                update = {"competitor_listings": existing_listings}
+                if not is_pending:
+                    update.update({"status": "running", "pending_action": {}})
+            else:
+                update = {"competitor_listings": data if isinstance(data, list) else [data]}
+                if not is_pending:
+                    update.update({"status": "running", "pending_action": {}})
+            await graph.aupdate_state(config, update, **update_kwargs)
+            if is_waiting_keyword and data_type in ("keywords", "auto") and "keyword_library" in update:
+                await _auto_resume_after_keyword(run_id)
+
+        elif file.filename and file.filename.lower().endswith((".md", ".txt")):
+            text = content.decode("utf-8", errors="replace").strip()
+            if data_type in ("reviews", "auto"):
+                review_item = {"title": file.filename, "body": text, "rating": 0, "source": "uploaded_file"}
+                existing_reviews = list(cur_state.values.get("customer_reviews", [])) if cur_state and cur_state.values else []
+                existing_reviews.append(review_item)
+                await graph.aupdate_state(config, {"customer_reviews": existing_reviews}, **update_kwargs)
+                return {"status": "accepted", "review_count": len(existing_reviews)}
+            elif data_type == "listings":
+                listing_item = {"raw_text": text, "source": file.filename}
+                existing_listings = list(cur_state.values.get("competitor_listings", [])) if cur_state and cur_state.values else []
+                existing_listings.append(listing_item)
+                update = {"competitor_listings": existing_listings}
+                if not is_pending:
+                    update.update({"status": "running", "pending_action": {}})
+                await graph.aupdate_state(config, update, **update_kwargs)
+                return {"status": "accepted", "listing_count": len(existing_listings)}
+            else:
+                raise HTTPException(400, "MD/TXT 文件请指定 data_type 为 reviews 或 listings")
+
+        elif file.filename and file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            save_path = toolbox.file_store.run_dir(run_id) + f"/{file.filename}"
+            with open(save_path, "wb") as f:
+                f.write(content)
+            existing_screenshots = cur_state.values.get("rufus_screenshots", []) if cur_state and cur_state.values else []
+            existing_screenshots.append(save_path)
+            await graph.aupdate_state(config, {"rufus_screenshots": existing_screenshots}, **update_kwargs)
+            return {"status": "accepted", "saved": save_path}
+        else:
+            raise HTTPException(400, "支持 .json / .xlsx / .md / .txt / .png / .jpg 文件")
 
     return {"status": "accepted"}
 
@@ -190,7 +559,7 @@ async def get_final(run_id: str):
 
 @router.get("/prompts")
 async def list_prompts():
-    """List all prompt files with metadata."""
+    """List only the active version of each prompt template."""
     results = []
     if not os.path.isdir(PROMPTS_DIR):
         return results
@@ -199,17 +568,40 @@ async def list_prompts():
         agent_path = os.path.join(PROMPTS_DIR, agent_dir)
         if not os.path.isdir(agent_path):
             continue
+
+        meta_path = os.path.join(agent_path, "meta.json")
+        active_versions: dict[str, str] = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            for tpl_name, tpl_cfg in meta.get("templates", {}).items():
+                version = tpl_cfg.get("active", "v1")
+                active_versions[tpl_name] = version
+
         for filename in sorted(os.listdir(agent_path)):
             if not filename.endswith(".md"):
                 continue
+            name = filename.removesuffix(".md")
+            tpl_name = _strip_version(name)
+            if tpl_name in active_versions:
+                expected = f"{tpl_name}_{active_versions[tpl_name]}"
+                if name != expected:
+                    continue
+
             override_path = os.path.join(agent_path, f".override_{filename}")
             results.append({
                 "agent": agent_dir,
-                "name": filename.removesuffix(".md"),
+                "name": name,
                 "filename": filename,
                 "modified": os.path.exists(override_path),
             })
     return results
+
+
+def _strip_version(name: str) -> str:
+    """Remove trailing _v1, _v2 etc. from a template name."""
+    m = re.match(r"^(.+)_v\d+$", name)
+    return m.group(1) if m else name
 
 
 @router.get("/prompts/{agent}/{name}")
@@ -277,11 +669,78 @@ def _get_toolbox():
     return get_toolbox()
 
 
+async def _auto_resume_after_keyword(run_id: str):
+    """Resume graph after keyword upload so it reaches the keyword_review interrupt."""
+    from app.api._state import set_run_task
+
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+
+
 async def _run_graph(thread_id: str, initial_state: dict):
-    graph = _get_graph()
-    await graph.ainvoke(initial_state, {"configurable": {"thread_id": thread_id}})
+    token = codex_progress.current_run_id.set(thread_id)
+    try:
+        graph = _get_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            await graph.ainvoke(initial_state, config)
+        except Exception as e:
+            await _mark_graph_error(graph, config, e)
+    finally:
+        codex_progress.current_run_id.reset(token)
+
+
+async def _run_graph_from_state(thread_id: str):
+    """Start graph execution from a pre-populated state (pending → running)."""
+    token = codex_progress.current_run_id.set(thread_id)
+    try:
+        graph = _get_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            state = await graph.aget_state(config)
+            initial = dict(state.values) if state and state.values else {}
+            initial["status"] = "running"
+            await graph.ainvoke(initial, config)
+        except Exception as e:
+            await _mark_graph_error(graph, config, e)
+    finally:
+        codex_progress.current_run_id.reset(token)
 
 
 async def _resume_graph(thread_id: str):
-    graph = _get_graph()
-    await graph.ainvoke(None, {"configurable": {"thread_id": thread_id}})
+    token = codex_progress.current_run_id.set(thread_id)
+    try:
+        graph = _get_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            await graph.ainvoke(None, config)
+        except Exception as e:
+            await _mark_graph_error(graph, config, e)
+    finally:
+        codex_progress.current_run_id.reset(token)
+
+
+async def _mark_graph_error(graph, config, exc: Exception):
+    """Persist error info into graph state so the frontend can display it."""
+    import logging
+    import traceback
+
+    logger = logging.getLogger("eco_listing")
+    logger.error("Graph execution error: %s", exc, exc_info=True)
+
+    error_msg = f"{type(exc).__name__}: {exc}"
+    tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    short_tb = "".join(tb[-3:]) if len(tb) > 3 else "".join(tb)
+
+    try:
+        await graph.aupdate_state(config, {
+            "status": "failed",
+            "error": error_msg,
+            "agent_log": [MemoryHelper.log_action(
+                "orchestrator", "error",
+                error=error_msg,
+                traceback=short_tb,
+            )],
+        })
+    except Exception:
+        logger.error("Failed to persist error state", exc_info=True)

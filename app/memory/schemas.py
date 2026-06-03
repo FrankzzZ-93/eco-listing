@@ -41,3 +41,6 @@ class ListingState(TypedDict):
     pending_action: dict
     agent_log: Annotated[list, operator.add]
     error: str
+    # Per-run length limits (title/bullet/description chars, ST bytes). Seeded
+    # from settings at create time; enforced in the copywriter round-3 loop.
+    length_limits: dict

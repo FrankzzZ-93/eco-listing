@@ -1,0 +1,31 @@
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- Secrets / local config ---
+.env
+.env.local
+
+# --- Node / frontend ---
+web/node_modules/
+node_modules/
+web/dist/
+dist/
+*.log
+
+# --- Runtime data / generated artifacts ---
+artifacts/
+checkpoints.db
+checkpoints.db-shm
+checkpoints.db-wal
+run_registry.json
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+*.swp

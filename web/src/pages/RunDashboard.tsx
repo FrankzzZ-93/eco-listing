@@ -1,32 +1,35 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Layout, Tabs, Card, Spin, Typography, Row, Col } from 'antd';
+import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag } from 'antd';
+import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined } from '@ant-design/icons';
 import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
 import DataPreviewCollapse from '../components/status/DataPreviewCollapse';
+import LiveCodexBanner from '../components/status/LiveCodexBanner';
 import AttributesReviewPanel from '../components/review/AttributesReviewPanel';
-import PromptListPanel from '../components/prompts/PromptListPanel';
-import PromptEditor from '../components/prompts/PromptEditor';
+import KeywordReviewPanel from '../components/review/KeywordReviewPanel';
 import ListingPreview from '../components/output/ListingPreview';
 import { useRunStatus } from '../hooks/useRunStatus';
-import { usePrompts } from '../hooks/usePrompts';
-import { getFinal } from '../api/runs';
-import type { PromptMeta } from '../types/prompt';
+import { getFinal, pauseRun, resumeRun, stopRun } from '../api/runs';
 import type { FinalOutput } from '../types/listing';
 
 const { Sider, Content } = Layout;
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 export default function RunDashboard() {
   const { runId, tab } = useParams<{ runId: string; tab?: string }>();
   const navigate = useNavigate();
-  const { run, isLoading } = useRunStatus(runId);
-  const { prompts, refresh: refreshPrompts } = usePrompts();
+  const { run, isLoading, refresh } = useRunStatus(runId);
 
   const [activeTab, setActiveTab] = useState(tab || 'status');
-  const [selectedPrompt, setSelectedPrompt] = useState<PromptMeta | null>(null);
   const [finalOutput, setFinalOutput] = useState<FinalOutput | null>(null);
   const [finalLoading, setFinalLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const handleReviewComplete = () => {
+    setActiveTab('status');
+    refresh();
+  };
 
   useEffect(() => {
     if (tab) setActiveTab(tab);
@@ -34,9 +37,32 @@ export default function RunDashboard() {
 
   useEffect(() => {
     if (run?.status === 'waiting_human') {
-      setActiveTab('review');
+      const pt = run.pending_action?.type;
+      if (pt === 'review_keywords') {
+        setActiveTab('keyword-review');
+      } else if (pt === 'review_product_attributes') {
+        setActiveTab('attr-review');
+      }
     }
-  }, [run?.status]);
+  }, [run?.status, run?.pending_action?.type]);
+
+  const prevStatusRef = useRef(run?.status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = run?.status;
+    if (run?.status === 'failed' && prev !== 'failed') {
+      notification.error({
+        message: '任务执行出错',
+        description: run.error || '流程执行过程中遇到错误，请查看运行状态了解详情。',
+        duration: 0,
+        placement: 'topRight',
+      });
+      setActiveTab('status');
+    }
+    if (run?.status === 'completed' && prev !== 'completed') {
+      setActiveTab('output');
+    }
+  }, [run?.status, run?.error]);
 
   useEffect(() => {
     if (run?.memory_snapshot?.has_final_listing && run?.memory_snapshot?.has_final_st) {
@@ -53,102 +79,276 @@ export default function RunDashboard() {
     navigate(`/run/${runId}/${key}`, { replace: true });
   };
 
+  const handlePause = async () => {
+    setActionLoading(true);
+    try {
+      await pauseRun(runId!);
+      message.success('任务已暂停');
+    } catch {
+      message.error('暂停失败');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleResume = async () => {
+    setActionLoading(true);
+    try {
+      await resumeRun(runId!);
+      message.success('任务已恢复');
+    } catch {
+      message.error('恢复失败');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStop = () => {
+    Modal.confirm({
+      title: '确认停止任务？',
+      content: '停止后任务将无法恢复，已产出的中间数据会保留。',
+      okText: '确认停止',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setActionLoading(true);
+        try {
+          await stopRun(runId!);
+          message.success('任务已停止');
+        } catch {
+          message.error('停止失败');
+        } finally {
+          setActionLoading(false);
+        }
+      },
+    });
+  };
+
   if (isLoading && !run) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 100 }}>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: 100, flexDirection: 'column', gap: 16 }}>
         <Spin size="large" />
+        <Typography.Text type="secondary">正在加载任务状态…</Typography.Text>
       </div>
     );
   }
 
   return (
-    <Layout style={{ background: 'transparent', minHeight: 'calc(100vh - 130px)' }}>
-      <Sider
-        width={220}
-        style={{
-          background: '#fff',
-          borderRadius: 8,
-          marginRight: 16,
-          overflow: 'auto',
-        }}
-      >
-        <PipelineSidebar run={run} />
-      </Sider>
+    <div>
+      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Button
+          type="text"
+          icon={<ArrowLeftOutlined />}
+          onClick={() => navigate('/new')}
+        >
+          返回
+        </Button>
+        <Space>
+          {run?.status === 'running' && (
+            <Button
+              icon={<PauseCircleOutlined />}
+              onClick={handlePause}
+              loading={actionLoading}
+            >
+              暂停
+            </Button>
+          )}
+          {(run?.status === 'paused' || run?.status === 'failed') && (
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              onClick={handleResume}
+              loading={actionLoading}
+            >
+              {run?.status === 'failed' ? '重试' : '继续'}
+            </Button>
+          )}
+          {(run?.status === 'running' || run?.status === 'paused' || run?.status === 'waiting_human') && (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={handleStop}
+              loading={actionLoading}
+            >
+              停止
+            </Button>
+          )}
+        </Space>
+      </div>
+      <Layout style={{ background: 'transparent', minHeight: 'calc(100vh - 130px)' }}>
+        <Sider
+          width={280}
+          style={{
+            background: '#fff',
+            borderRadius: 8,
+            marginRight: 16,
+            overflow: 'auto',
+          }}
+        >
+          <PipelineSidebar run={run} runId={runId} />
+        </Sider>
 
-      <Content>
-        <Card style={{ minHeight: 500 }}>
-          <Tabs
-            activeKey={activeTab}
-            onChange={handleTabChange}
-            items={[
-              {
-                key: 'status',
-                label: 'Status',
-                children: (
-                  <div>
-                    <Title level={5}>Agent Log</Title>
-                    <AgentLogTable logs={run?.agent_log ?? []} />
-                    <div style={{ marginTop: 24 }}>
-                      <DataPreviewCollapse memorySnapshot={run?.memory_snapshot} />
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                key: 'review',
-                label: 'Review',
-                children: (
-                  <AttributesReviewPanel
-                    runId={runId!}
-                    pendingAction={run?.pending_action ?? null}
-                    onReviewComplete={() => {}}
-                  />
-                ),
-              },
-              {
-                key: 'prompts',
-                label: 'Prompts',
-                children: (
-                  <Row gutter={16}>
-                    <Col span={10}>
-                      <PromptListPanel
-                        prompts={prompts}
-                        selectedKey={
-                          selectedPrompt
-                            ? `${selectedPrompt.agent}/${selectedPrompt.name}`
-                            : null
-                        }
-                        onSelect={setSelectedPrompt}
-                      />
-                    </Col>
-                    <Col span={14}>
-                      {selectedPrompt ? (
-                        <PromptEditor
-                          prompt={selectedPrompt}
-                          onSaved={refreshPrompts}
+        <Content>
+          {run?.status === 'completed' && finalOutput?.final_listing && (
+            <Card style={{ marginBottom: 16 }}>
+              <Result
+                status="success"
+                title="任务已完成"
+                subTitle={runId}
+                extra={
+                  <Button type="primary" icon={<FileTextOutlined />} onClick={() => setActiveTab('output')}>
+                    查看最终产出
+                  </Button>
+                }
+              />
+              <Descriptions size="small" bordered column={2} style={{ marginTop: -16 }}>
+                <Descriptions.Item label="标题">
+                  {(() => {
+                    const t = finalOutput.final_listing.title ?? '';
+                    return t.length > 80 ? t.slice(0, 80) + '…' : t;
+                  })()}
+                </Descriptions.Item>
+                <Descriptions.Item label="五点描述">
+                  {(finalOutput.final_listing.bullet_points ?? []).length} 条
+                </Descriptions.Item>
+                <Descriptions.Item label="Search Terms">
+                  {(() => {
+                    const bytes = finalOutput.word_frequency_report?.total_bytes;
+                    const count = (finalOutput.final_st ?? []).length;
+                    return (
+                      <Space>
+                        <Tag>{count} 个词</Tag>
+                        {bytes !== undefined && (
+                          <Tag color={bytes > 249 ? 'red' : 'green'}>{bytes} 字节</Tag>
+                        )}
+                      </Space>
+                    );
+                  })()}
+                </Descriptions.Item>
+                <Descriptions.Item label="关键词使用">
+                  {(() => {
+                    const r = finalOutput.word_frequency_report;
+                    if (!r) return <Tag>暂无</Tag>;
+                    return (
+                      <Space>
+                        <Tag color="blue">文案 {r.used_in_listing}</Tag>
+                        <Tag color="purple">ST {r.added_to_st}</Tag>
+                        <Text type="secondary" style={{ fontSize: 12 }}>共 {r.total_keywords}</Text>
+                      </Space>
+                    );
+                  })()}
+                </Descriptions.Item>
+              </Descriptions>
+            </Card>
+          )}
+          <Card style={{ minHeight: 500 }}>
+            <Tabs
+              activeKey={activeTab}
+              onChange={handleTabChange}
+              items={[
+                {
+                  key: 'status',
+                  label: '运行状态',
+                  children: (
+                    <div>
+                      {run?.status === 'running' && (
+                        <Alert
+                          message="任务正在执行中"
+                          description="系统正在自动处理，请耐心等待。页面会每 3 秒自动刷新状态。"
+                          type="info"
+                          showIcon
+                          style={{ marginBottom: 16 }}
                         />
-                      ) : (
-                        <Card style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <Typography.Text type="secondary">
-                            Select a prompt from the list to edit
-                          </Typography.Text>
-                        </Card>
                       )}
-                    </Col>
-                  </Row>
-                ),
-              },
-              {
-                key: 'output',
-                label: 'Output',
-                children: (
-                  <ListingPreview output={finalOutput} loading={finalLoading} />
-                ),
-              },
-            ]}
-          />
-        </Card>
-      </Content>
-    </Layout>
+                      {run?.status === 'paused' && (
+                        <Alert
+                          message="任务已暂停"
+                          description="点击上方「继续」按钮可恢复执行。"
+                          type="warning"
+                          showIcon
+                          style={{ marginBottom: 16 }}
+                        />
+                      )}
+                      {run?.status === 'stopped' && (
+                        <Alert
+                          message="任务已停止"
+                          description="任务已被手动停止，已产出的中间数据可查看。"
+                          type="error"
+                          showIcon
+                          style={{ marginBottom: 16 }}
+                        />
+                      )}
+                      {run?.status === 'failed' && (
+                        <Alert
+                          message="任务执行出错"
+                          description={
+                            <div>
+                              <div>{run.error || '执行过程中发生未知错误'}</div>
+                              <Button
+                                type="primary"
+                                size="small"
+                                style={{ marginTop: 8 }}
+                                icon={<PlayCircleOutlined />}
+                                onClick={handleResume}
+                                loading={actionLoading}
+                              >
+                                重试
+                              </Button>
+                            </div>
+                          }
+                          type="error"
+                          showIcon
+                          style={{ marginBottom: 16 }}
+                        />
+                      )}
+                      <Title level={5}>执行日志</Title>
+                      {run?.status === 'running' && run.live_codex && (
+                        <LiveCodexBanner progress={run.live_codex} />
+                      )}
+                      <AgentLogTable logs={run?.agent_log ?? []} />
+                      <div style={{ marginTop: 24 }}>
+                        <DataPreviewCollapse memorySnapshot={run?.memory_snapshot} runId={runId!} />
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'attr-review',
+                  label: '属性审核',
+                  children: (
+                    <AttributesReviewPanel
+                      runId={runId!}
+                      pendingAction={run?.pending_action ?? null}
+                      memorySnapshot={run?.memory_snapshot}
+                      onReviewComplete={handleReviewComplete}
+                    />
+                  ),
+                },
+                {
+                  key: 'keyword-review',
+                  label: '关键词审核',
+                  children: (
+                    <KeywordReviewPanel
+                      runId={runId!}
+                      pendingAction={run?.pending_action ?? null}
+                      memorySnapshot={run?.memory_snapshot}
+                      onReviewComplete={handleReviewComplete}
+                      onUploaded={refresh}
+                    />
+                  ),
+                },
+                {
+                  key: 'output',
+                  label: '最终产出',
+                  children: (
+                    <ListingPreview output={finalOutput} loading={finalLoading} />
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        </Content>
+      </Layout>
+    </div>
   );
 }

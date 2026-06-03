@@ -55,12 +55,19 @@ class BrowserTool:
     ) -> list[dict[str, Any]]:
         """Get customer reviews.
 
-        Tries Playwright first; falls back to Codex on anti-scraping detection.
+        Tries Playwright first; falls back to Codex on anti-scraping or empty results.
         """
         try:
             reviews = await self.scraper.get_reviews(asin, site, max_pages=max_pages)
-            logger.info("Reviews scraped via Playwright: %s/%s (%d reviews)", site, asin, len(reviews))
-            return reviews
+            if reviews:
+                logger.warning("Reviews scraped via Playwright: %s/%s (%d reviews)", site, asin, len(reviews))
+                return reviews
+            logger.warning(
+                "Playwright returned 0 reviews for %s/%s (page loaded but no review elements), "
+                "falling back to Codex",
+                site, asin,
+            )
+            return await self._codex_scrape_reviews(asin, site)
         except AntiScrapingError as e:
             logger.warning("Playwright blocked for reviews (%s), falling back to Codex", e)
             return await self._codex_scrape_reviews(asin, site)
@@ -131,23 +138,55 @@ class BrowserTool:
     async def _codex_scrape_reviews(self, asin: str, site: str) -> list[dict[str, Any]]:
         """Fallback: use Codex CLI to scrape reviews."""
         url = f"https://{site}/product-reviews/{asin}"
-        try:
-            result = await self.codex.browse_and_extract(
-                url=url,
-                instruction=(
-                    "Extract customer reviews from this page. For each review, "
-                    "get the title, body text, and star rating (as a number 1-5). "
-                    "Return as JSON with key 'reviews' containing a list of objects "
-                    "with 'title', 'body', and 'rating' fields. Get up to 20 reviews."
-                ),
-                response_schema={
-                    "reviews": [{"title": "string", "body": "string", "rating": "number"}]
-                },
-            )
-            return result.get("reviews", [])
-        except CodexToolError as e:
-            logger.error("Codex failed to scrape reviews: %s", e)
-            return []
+
+        instruction = (
+            "Extract customer reviews for this Amazon product. "
+            "IMPORTANT: Amazon often blocks direct access to review pages and requires sign-in. "
+            "If the direct page at {url} is blocked or requires sign-in, use web search "
+            "to find reviews for this product (search for the ASIN or product name + 'reviews'). "
+            "You can also try using curl with a browser User-Agent header to fetch the page. "
+            "For each review, get the title, body text, and star rating (as a number 1-5). "
+            "Return as JSON with key 'reviews' containing a list of objects "
+            "with 'title', 'body', and 'rating' fields. Get up to 20 reviews."
+        ).format(url=url)
+
+        schema = {"reviews": [{"title": "string", "body": "string", "rating": "number"}]}
+
+        for attempt in range(2):
+            try:
+                result = await self.codex.browse_and_extract(
+                    url=url,
+                    instruction=instruction,
+                    response_schema=schema,
+                )
+                reviews = result.get("reviews", [])
+                logger.warning(
+                    "Codex review attempt %d for %s: got %d reviews, keys=%s",
+                    attempt + 1, asin, len(reviews), list(result.keys()),
+                )
+                if reviews:
+                    return reviews
+                if attempt == 0:
+                    logger.warning(
+                        "Codex returned 0 reviews for %s (attempt 1), raw: %s — retrying with search-first strategy",
+                        asin, str(result)[:500],
+                    )
+                    instruction = (
+                        f"Find customer reviews for Amazon product ASIN {asin} on {site}. "
+                        "Do NOT try to open the Amazon review page directly — it will require sign-in. "
+                        f"Instead, use web search to find reviews (search for '{asin} amazon customer reviews'). "
+                        "Extract at least 10 reviews with title, body text, and star rating (1-5). "
+                        "Return JSON with key 'reviews' containing a list of objects "
+                        "with 'title', 'body', and 'rating' fields."
+                    )
+            except CodexToolError as e:
+                logger.error("Codex failed to scrape reviews (attempt %d): %s", attempt + 1, e)
+                if attempt == 0:
+                    continue
+                return []
+
+        logger.warning("All Codex review attempts returned 0 for %s", asin)
+        return []
 
     async def close(self):
         """Clean up browser resources."""

@@ -35,10 +35,10 @@ export default function AttributesSectionEditor({ label, value, onChange }: Prop
         />
         <Space style={{ marginTop: 8 }}>
           <Button size="small" icon={<CheckOutlined />} type="primary" onClick={handleSave}>
-            Save
+            保存
           </Button>
           <Button size="small" icon={<CloseOutlined />} onClick={handleCancel}>
-            Cancel
+            取消
           </Button>
         </Space>
       </div>
@@ -56,11 +56,11 @@ export default function AttributesSectionEditor({ label, value, onChange }: Prop
           onClick={() => setEditing(true)}
           style={{ marginLeft: 8 }}
         >
-          Edit
+          编辑
         </Button>
       </div>
       <div style={{ whiteSpace: 'pre-wrap', color: '#595959', paddingLeft: 8 }}>
-        {value || <em style={{ color: '#bfbfbf' }}>Empty</em>}
+        {value || <em style={{ color: '#bfbfbf' }}>暂无内容</em>}
       </div>
     </div>
   );

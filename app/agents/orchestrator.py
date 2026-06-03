@@ -23,8 +23,9 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
     graph.add_node("research", _bind(research_node, toolbox))
     graph.add_node("wait_upload", _passthrough)
     graph.add_node("product_analyst", _bind(product_analyst_node, toolbox))
-    graph.add_node("human_review", _passthrough)
+    graph.add_node("human_review", _human_review_passthrough)
     graph.add_node("keyword_upload", _passthrough)
+    graph.add_node("keyword_review", _passthrough)
     graph.add_node("keyword_classify", _bind(keyword_classify_node, toolbox))
     graph.add_node("copywriter", _bind(copywriter_node, toolbox))
     graph.add_node("st_optimize", _bind(st_optimize_node, toolbox))
@@ -49,10 +50,11 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
     graph.add_conditional_edges(
         "human_review",
         _after_human_review,
-        {"wait_keyword": "keyword_upload", "keyword_classify": "keyword_classify"},
+        {"wait_keyword": "keyword_upload", "keyword_review": "keyword_review"},
     )
 
-    graph.add_edge("keyword_upload", "keyword_classify")
+    graph.add_edge("keyword_upload", "keyword_review")
+    graph.add_edge("keyword_review", "keyword_classify")
     graph.add_edge("keyword_classify", "copywriter")
     graph.add_edge("copywriter", "st_optimize")
     graph.add_edge("st_optimize", "export")
@@ -72,7 +74,7 @@ def _after_analyst(state: ListingState) -> str:
 def _after_human_review(state: ListingState) -> str:
     """After human review, check if keyword library is available."""
     if MemoryHelper.has(state, "keyword_library"):
-        return "keyword_classify"
+        return "keyword_review"
     return "wait_keyword"
 
 
@@ -89,6 +91,31 @@ def _after_research(state: ListingState) -> str:
 def _passthrough(state: ListingState) -> dict:
     """No-op node used as interrupt point."""
     return {}
+
+
+def _human_review_passthrough(state: ListingState) -> dict:
+    """Resume point after the product-attributes interrupt.
+
+    Normally `submit_review` writes `approved_product_attributes` before
+    resuming, but the UI also lets the user fast-forward by uploading the
+    keyword library directly (`_auto_resume_after_keyword`), which skips
+    the explicit approval step. In that case treat the AI-generated draft
+    as implicitly approved so downstream nodes always have a populated
+    field — and so the memory snapshot reflects what the run will use.
+    """
+    if MemoryHelper.has(state, "approved_product_attributes"):
+        return {}
+    draft = state.get("product_attributes_draft") or {}
+    if not draft:
+        return {}
+    return {
+        "approved_product_attributes": draft,
+        "agent_log": [MemoryHelper.log_action(
+            "orchestrator",
+            "auto_approve_attributes",
+            reason="user skipped explicit review",
+        )],
+    }
 
 
 async def _export_node(state: ListingState, toolbox: ToolBox) -> dict:
@@ -111,6 +138,6 @@ def create_app_graph(toolbox: ToolBox, checkpointer):
     graph = build_graph(toolbox)
     compiled = graph.compile(
         checkpointer=checkpointer,
-        interrupt_before=["wait_upload", "human_review", "keyword_upload"],
+        interrupt_before=["wait_upload", "human_review", "keyword_upload", "keyword_review"],
     )
     return compiled

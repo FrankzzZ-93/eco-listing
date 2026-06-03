@@ -1,10 +1,44 @@
 import json
 import os
+import re
 import time
 
 from app.agents.base import ToolBox
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
+from app.tools.keyword_tool import ASIN_RE
+
+# Matches an ASIN source-label prefix the model tends to emit when competitor
+# values differ, e.g. "B0XXXXXXXX: " or "B0AAA/B0BBB: " (full/half-width colon).
+_ASIN_LABEL_RE = re.compile(
+    r"(?:B0[A-Z0-9]{8})(?:\s*/\s*B0[A-Z0-9]{8})*\s*[:：]\s*",
+    re.IGNORECASE,
+)
+# Matches filler clauses like "；其他ASIN无数据" / "; 其他ASIN无具体人群数据".
+_ASIN_FILLER_RE = re.compile(r"[；;，,]?\s*其他\s*ASIN[^；;]*", re.IGNORECASE)
+
+
+def _strip_asin_text(text: str) -> str:
+    """Remove ASIN source-labels/filler so attribute values show content only."""
+    s = _ASIN_LABEL_RE.sub("", text)
+    s = _ASIN_FILLER_RE.sub("", s)
+    s = ASIN_RE.sub("", s)  # any residual standalone ASIN tokens
+    s = re.sub(r"\s*[；;]\s*[；;]+", "； ", s)  # collapse empty separators
+    s = re.sub(r"^[\s；;，,:：/]+", "", s)  # leading punctuation left over
+    s = re.sub(r"[\s；;，,]+$", "", s)  # trailing punctuation left over
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+def _strip_asins(obj):
+    """Recursively strip ASIN labels from every string value in the draft."""
+    if isinstance(obj, str):
+        return _strip_asin_text(obj)
+    if isinstance(obj, list):
+        return [_strip_asins(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _strip_asins(v) for k, v in obj.items()}
+    return obj
 
 
 async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
@@ -54,6 +88,10 @@ async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
         )
         confidence = eval2.get("confidence", confidence)
         notes = eval2.get("notes", notes)
+
+    # Strip ASIN source-labels so the attribute table shows content directly
+    # (also keeps ASINs out of the data fed to the copywriter downstream).
+    draft = _strip_asins(draft)
 
     duration = int((time.time() - t0) * 1000)
 

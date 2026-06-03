@@ -64,9 +64,28 @@ class TestSTOptimize:
         classified = {
             "functional": [
                 {"keyword": "waterproof", "search_volume": 100},
-                {"keyword": "unique_keyword", "search_volume": 50},
+                {"keyword": "spacious", "search_volume": 50},
             ]
         }
+        # ST is now a bag of unique single words: words already indexed in the
+        # listing (waterproof) are dropped; novel words (spacious) are kept.
         result = tool.optimize_st(listing, ["waterproof"], classified)
         assert "waterproof" not in result["final_st"]
-        assert "unique_keyword" in result["final_st"]
+        assert "spacious" in result["final_st"]
+
+    def test_dedupes_words_across_phrases(self):
+        tool = KeywordTool()
+        listing = {"title": "Belt Hanger", "bullet_points": [], "description": ""}
+        st_v3 = [
+            "closet organizers and storage",
+            "closet organizer",
+            "hat organizer",
+            "closet organization",
+        ]
+        result = tool.optimize_st(listing, st_v3, {})
+        st = result["final_st"]
+        # No word repeats across the ST bag.
+        assert len(st) == len(set(st))
+        # Shared words appear exactly once.
+        assert st.count("closet") == 1
+        assert st.count("organizer") == 1

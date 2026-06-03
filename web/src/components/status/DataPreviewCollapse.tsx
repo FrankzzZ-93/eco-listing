@@ -1,70 +1,101 @@
-import { Collapse, Typography, Empty } from 'antd';
+import { useState } from 'react';
+import { Typography, Empty, Tag, Button } from 'antd';
+import { CheckCircleFilled, ClockCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import type { MemorySnapshot } from '../../types/run';
+import DataPreviewDrawer from './DataPreviewDrawer';
 
 const { Text } = Typography;
 
-interface Props {
-  memorySnapshot: MemorySnapshot | undefined;
+interface DataItem {
+  key: string;
+  label: string;
+  snapshotKey: keyof MemorySnapshot;
 }
 
-export default function DataPreviewCollapse({ memorySnapshot }: Props) {
+const ALL_ITEMS: DataItem[] = [
+  { key: 'competitor_listings', label: '竞品 Listing 数据', snapshotKey: 'has_competitor_listings' },
+  { key: 'customer_reviews', label: '竞品评论数据', snapshotKey: 'has_customer_reviews' },
+  { key: 'review_summary', label: '评论摘要', snapshotKey: 'has_review_summary' },
+  { key: 'rufus_questions', label: 'Rufus 问答', snapshotKey: 'has_rufus_questions' },
+  { key: 'product_attributes_draft', label: '产品属性表（初稿）', snapshotKey: 'has_product_attributes_draft' },
+  { key: 'approved_product_attributes', label: '产品属性表（已审核）', snapshotKey: 'has_approved_product_attributes' },
+  { key: 'keyword_library', label: '关键词词库', snapshotKey: 'has_keyword_library' },
+  { key: 'classified_keywords', label: '分类关键词', snapshotKey: 'has_classified_keywords' },
+  { key: 'final_listing', label: '最终 Listing', snapshotKey: 'has_final_listing' },
+  { key: 'final_st', label: '最终 Search Terms', snapshotKey: 'has_final_st' },
+];
+
+interface Props {
+  memorySnapshot: MemorySnapshot | undefined;
+  runId: string;
+}
+
+export default function DataPreviewCollapse({ memorySnapshot, runId }: Props) {
+  const [drawerState, setDrawerState] = useState<{ open: boolean; key: string; label: string }>({
+    open: false, key: '', label: '',
+  });
+
   if (!memorySnapshot) {
-    return <Empty description="No data collected yet" />;
+    return <Empty description="暂无数据" />;
   }
 
-  const items = [
-    {
-      key: 'competitor_listings',
-      label: 'Competitor Listings',
-      available: memorySnapshot.has_competitor_listings,
-    },
-    {
-      key: 'review_summary',
-      label: 'Review Summary',
-      available: memorySnapshot.has_review_summary,
-    },
-    {
-      key: 'rufus_questions',
-      label: 'Rufus Questions',
-      available: memorySnapshot.has_rufus_questions,
-    },
-    {
-      key: 'classified_keywords',
-      label: 'Classified Keywords',
-      available: memorySnapshot.has_classified_keywords,
-    },
-    {
-      key: 'final_listing',
-      label: 'Final Listing',
-      available: memorySnapshot.has_final_listing,
-    },
-    {
-      key: 'final_st',
-      label: 'Final Search Terms',
-      available: memorySnapshot.has_final_st,
-    },
-  ].filter((item) => item.available);
+  const hasAny = ALL_ITEMS.some((item) => memorySnapshot[item.snapshotKey]);
 
-  if (items.length === 0) {
-    return <Empty description="Pipeline running, no data available yet" />;
+  if (!hasAny) {
+    return <Empty description="流程执行中，数据尚未产出" />;
   }
 
   return (
     <div>
       <Text strong style={{ display: 'block', marginBottom: 12 }}>
-        Collected Data
+        已产出数据
       </Text>
-      <Collapse
-        size="small"
-        items={items.map((item) => ({
-          key: item.key,
-          label: item.label,
-          children: (
-            <Text type="secondary">
-              Data available. Full preview will be loaded from the API when expanded.
-            </Text>
-          ),
-        }))}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {ALL_ITEMS.map((item) => {
+          const available = memorySnapshot[item.snapshotKey];
+          return (
+            <div
+              key={item.key}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 12px',
+                background: available ? '#f6ffed' : '#fafafa',
+                borderRadius: 6,
+                border: `1px solid ${available ? '#b7eb8f' : '#f0f0f0'}`,
+              }}
+            >
+              {available ? (
+                <CheckCircleFilled style={{ color: '#52c41a' }} />
+              ) : (
+                <ClockCircleOutlined style={{ color: '#d9d9d9' }} />
+              )}
+              <Text style={{ color: available ? '#262626' : '#bfbfbf', flex: 1 }}>
+                {item.label}
+              </Text>
+              {available && (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<EyeOutlined />}
+                  onClick={() => setDrawerState({ open: true, key: item.key, label: item.label })}
+                  style={{ padding: '0 4px' }}
+                >
+                  查看
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <DataPreviewDrawer
+        open={drawerState.open}
+        runId={runId}
+        dataKey={drawerState.key}
+        label={drawerState.label}
+        onClose={() => setDrawerState((s) => ({ ...s, open: false }))}
       />
     </div>
   );

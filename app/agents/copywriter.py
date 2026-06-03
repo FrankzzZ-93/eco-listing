@@ -5,6 +5,7 @@ import os
 import time
 
 from app.agents.base import ToolBox
+from app.config import settings
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
 
@@ -13,15 +14,23 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: three-round iterative listing generation."""
     logs: list[dict] = []
 
+    # Defensive fallback: human_review now copies the draft when no explicit
+    # approval is submitted, but we also degrade gracefully for any historical
+    # state that escaped that fix.
+    attrs = (
+        state.get("approved_product_attributes")
+        or state.get("product_attributes_draft")
+        or {}
+    )
+    attrs_json = json.dumps(attrs, ensure_ascii=False)
+
     # Round 1: Draft generation (Gemini)
     t0 = time.time()
     p1 = toolbox.prompts.render(
         "copywriter",
         "round_1_draft",
         {
-            "approved_product_attributes": json.dumps(
-                state["approved_product_attributes"], ensure_ascii=False
-            ),
+            "approved_product_attributes": attrs_json,
             "classified_keywords": json.dumps(
                 state["classified_keywords"], ensure_ascii=False
             ),
@@ -44,9 +53,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         "round_2_rufus",
         {
             "draft_v1": json.dumps(v1, ensure_ascii=False),
-            "product_attributes": json.dumps(
-                state["approved_product_attributes"], ensure_ascii=False
-            ),
+            "product_attributes": attrs_json,
             "rufus_questions": json.dumps(
                 state.get("rufus_questions", []), ensure_ascii=False
             ),
@@ -65,11 +72,15 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         )
     )
 
-    # Round 3: Compliance correction with retry loop
+    # Round 3: Compliance + length correction with retry loop.
+    # Length limits live in state (seeded from settings at create time) so they
+    # are checkpointed and per-run customizable; any over-limit field is fed
+    # back as a violation and the whole listing is regenerated.
     rules_text = toolbox.compliance.load_rules()
+    limits = state.get("length_limits") or {}
     violations_ctx = ""
     final = None
-    MAX_RETRIES = 2
+    MAX_RETRIES = settings.copywriter_max_retries
 
     for attempt in range(MAX_RETRIES + 1):
         t0 = time.time()
@@ -78,9 +89,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
             "round_3_compliance",
             {
                 "draft_v2": json.dumps(v2, ensure_ascii=False),
-                "product_attributes": json.dumps(
-                    state["approved_product_attributes"], ensure_ascii=False
-                ),
+                "product_attributes": attrs_json,
                 "compliance_rules": rules_text,
                 "previous_violations": violations_ctx,
             },
@@ -91,8 +100,9 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
             "title": v3.get("title", ""),
             "bullet_points": v3.get("bullet_points", []),
             "description": v3.get("description", ""),
+            "search_terms": v3.get("search_terms", []),
         }
-        violations = toolbox.compliance.validate(listing_for_check)
+        violations = toolbox.compliance.validate(listing_for_check, limits)
 
         logs.append(
             MemoryHelper.log_action(

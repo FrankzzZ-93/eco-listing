@@ -9,13 +9,20 @@ from app.memory.shared_memory import MemoryHelper
 async def keyword_classify_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: classify keywords into semantic categories using LLM."""
     t0 = time.time()
+    # Defensive fallback: if the user fast-forwarded past human_review without
+    # an explicit approval, the orchestrator now copies the draft into
+    # `approved_product_attributes`. This `or` keeps us working on any
+    # historical run/state that escaped that fix.
+    attrs = (
+        state.get("approved_product_attributes")
+        or state.get("product_attributes_draft")
+        or {}
+    )
     prompt = toolbox.prompts.render(
         "keyword_strategist",
         "classify",
         {
-            "product_attributes": json.dumps(
-                state["approved_product_attributes"], ensure_ascii=False
-            ),
+            "product_attributes": json.dumps(attrs, ensure_ascii=False),
             "keywords": json.dumps(state["keyword_library"], ensure_ascii=False),
         },
     )

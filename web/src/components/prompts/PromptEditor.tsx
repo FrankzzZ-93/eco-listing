@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Button, Space, Typography, Spin, message } from 'antd';
-import { SaveOutlined, UndoOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { SaveOutlined, UndoOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import { getPrompt, updatePrompt, resetPrompt } from '../../api/prompts';
 import type { PromptMeta } from '../../types/prompt';
@@ -21,7 +21,7 @@ export default function PromptEditor({ prompt, onSaved }: Props) {
     setLoading(true);
     getPrompt(prompt.agent, prompt.name)
       .then((data) => setContent(data.content))
-      .catch(() => message.error('Failed to load prompt'))
+      .catch(() => message.error('加载提示词失败'))
       .finally(() => setLoading(false));
   }, [prompt.agent, prompt.name]);
 
@@ -29,10 +29,10 @@ export default function PromptEditor({ prompt, onSaved }: Props) {
     setSaving(true);
     try {
       await updatePrompt(prompt.agent, prompt.name, content);
-      message.success('Prompt saved');
+      message.success('提示词已保存');
       onSaved();
     } catch {
-      message.error('Failed to save prompt');
+      message.error('保存提示词失败');
     } finally {
       setSaving(false);
     }
@@ -44,10 +44,10 @@ export default function PromptEditor({ prompt, onSaved }: Props) {
       await resetPrompt(prompt.agent, prompt.name);
       const data = await getPrompt(prompt.agent, prompt.name);
       setContent(data.content);
-      message.success('Prompt reset to default');
+      message.success('已恢复默认提示词');
       onSaved();
     } catch {
-      message.error('Failed to reset prompt');
+      message.error('恢复失败');
     } finally {
       setSaving(false);
     }
@@ -76,7 +76,7 @@ export default function PromptEditor({ prompt, onSaved }: Props) {
             onClick={handleReset}
             loading={saving}
           >
-            Reset
+            恢复默认
           </Button>
         </Space>
       }
@@ -95,23 +95,19 @@ export default function PromptEditor({ prompt, onSaved }: Props) {
           }}
         />
       </div>
-      <Space style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 12 }}>
         <Button
           type="primary"
           icon={<SaveOutlined />}
           onClick={handleSave}
           loading={saving}
         >
-          Save
+          保存
         </Button>
-        <Button
-          icon={<PlayCircleOutlined />}
-          onClick={handleSave}
-          loading={saving}
-        >
-          Save & Re-run from this step
-        </Button>
-      </Space>
+        <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
+          保存后将在下次创建的任务中生效
+        </Text>
+      </div>
     </Card>
   );
 }

@@ -9,6 +9,7 @@ litellm>=1.30
 python-dotenv>=1.0
 tenacity>=8.2
 python-multipart>=0.0.9
+openpyxl>=3.1
 playwright>=1.44
 pytest>=8.0
 pytest-asyncio>=0.23

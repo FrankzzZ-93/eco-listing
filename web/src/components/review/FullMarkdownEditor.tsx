@@ -13,12 +13,13 @@ export default function FullMarkdownEditor({ open, content, onSave, onClose }: P
 
   return (
     <Modal
-      title="Full Editor"
+      title="全文编辑"
       open={open}
       onOk={() => onSave(editorValue)}
       onCancel={onClose}
       width={800}
-      okText="Save Changes"
+      okText="保存修改"
+      cancelText="取消"
     >
       <div style={{ height: 500, border: '1px solid #d9d9d9', borderRadius: 6 }}>
         <Editor

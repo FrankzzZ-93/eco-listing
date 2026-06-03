@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Card,
   Form,
@@ -14,6 +14,9 @@ import {
   Col,
   Tag,
   Steps,
+  Table,
+  Empty,
+  Progress,
 } from 'antd';
 import {
   PlusOutlined,
@@ -23,10 +26,17 @@ import {
   SearchOutlined,
   TagsOutlined,
   EditOutlined,
+  EyeOutlined,
+  LoadingOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ExclamationCircleOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { createRun } from '../api/runs';
+import { createRun, startRun, listRuns, uploadFile, deleteRun } from '../api/runs';
 import { isValidAsin, normalizeAsin } from '../utils/asinValidator';
+import type { RunSummary } from '../types/run';
 
 const { Dragger } = Upload;
 const { Title, Text, Paragraph } = Typography;
@@ -49,29 +59,53 @@ interface FileInputProps {
   label: string;
   hint: string;
   required?: boolean;
-  file: File | null;
-  onFileChange: (file: File | null) => void;
+  multiple?: boolean;
+  file?: File | null;
+  files?: File[];
+  onFileChange?: (file: File | null) => void;
+  onFilesChange?: React.Dispatch<React.SetStateAction<File[]>>;
 }
 
-function FileInput({ label, hint, required, file, onFileChange }: FileInputProps) {
+function FileInput({ label, hint, required, multiple, file, files, onFileChange, onFilesChange }: FileInputProps) {
+  const fileList = multiple
+    ? (files ?? []).map((f, i) => ({ uid: String(i), name: f.name, status: 'done' as const }))
+    : file ? [{ uid: '-1', name: file.name, status: 'done' as const }] : [];
+
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ marginBottom: 6 }}>
         <Text strong>{label}</Text>
         {required && <Text type="danger"> *</Text>}
         {!required && <Tag style={{ marginLeft: 8 }} color="default">可选</Tag>}
+        {multiple && <Tag style={{ marginLeft: 4 }} color="blue">多文件</Tag>}
       </div>
       <Dragger
         accept=".csv,.json,.txt,.md,.xlsx"
-        maxCount={1}
+        multiple={multiple}
+        maxCount={multiple ? 20 : 1}
         beforeUpload={(f) => {
-          onFileChange(f);
+          // On a multi-file drop, antd calls beforeUpload once per file; use a
+          // functional state update so every file accumulates (avoids the
+          // stale-closure bug where only the last dropped file survives).
+          if (multiple && onFilesChange) {
+            onFilesChange((prev) =>
+              prev.some((p) => p.name === f.name && p.size === f.size)
+                ? prev
+                : [...prev, f],
+            );
+          } else if (onFileChange) {
+            onFileChange(f);
+          }
           return false;
         }}
-        onRemove={() => {
-          onFileChange(null);
+        onRemove={(removed) => {
+          if (multiple && onFilesChange) {
+            onFilesChange((prev) => prev.filter((f) => f.name !== removed.name));
+          } else if (onFileChange) {
+            onFileChange(null);
+          }
         }}
-        fileList={file ? [{ uid: '-1', name: file.name, status: 'done' as const }] : []}
+        fileList={fileList}
         style={{ padding: '8px 0' }}
       >
         <p className="ant-upload-drag-icon" style={{ marginBottom: 4 }}>
@@ -89,30 +123,121 @@ function FileInput({ label, hint, required, file, onFileChange }: FileInputProps
 }
 
 const WORKFLOW_STEPS = [
-  {
-    title: '认知层',
-    description: '竞品抓取 → 评论分析 → Rufus 问答 → 本品属性表',
-    icon: <SearchOutlined />,
-  },
-  {
-    title: '语义层',
-    description: '关键词分类建模',
-    icon: <TagsOutlined />,
-  },
-  {
-    title: '表达层',
-    description: '多轮迭代生成 Listing + ST 优化',
-    icon: <EditOutlined />,
-  },
+  { title: '认知层', description: '竞品抓取 → 评论分析 → Rufus 问答 → 本品属性表', icon: <SearchOutlined /> },
+  { title: '语义层', description: '关键词分类建模', icon: <TagsOutlined /> },
+  { title: '表达层', description: '多轮迭代生成 Listing + ST 优化', icon: <EditOutlined /> },
 ];
+
+const STATUS_ICON: Record<string, React.ReactNode> = {
+  pending: <LoadingOutlined style={{ color: '#8c8c8c' }} />,
+  running: <LoadingOutlined style={{ color: '#1677ff' }} />,
+  waiting_human: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
+  paused: <ExclamationCircleOutlined style={{ color: '#8c8c8c' }} />,
+  stopped: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+  completed: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+  failed: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: '准备中',
+  running: '运行中',
+  waiting_human: '等待操作',
+  paused: '已暂停',
+  stopped: '已停止',
+  completed: '已完成',
+  failed: '失败',
+  unknown: '未知',
+};
+
+function ActiveRunCard({ run, onClick }: { run: RunSummary; onClick: () => void }) {
+  const percent = run.total_steps > 0
+    ? Math.round((run.completed_steps / run.total_steps) * 100)
+    : 0;
+
+  return (
+    <Card
+      size="small"
+      hoverable
+      onClick={onClick}
+      style={{ marginBottom: 12, borderLeft: `3px solid ${run.status === 'waiting_human' ? '#faad14' : '#1677ff'}` }}
+    >
+      <Row align="middle" gutter={16}>
+        <Col flex="auto">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            {STATUS_ICON[run.status] ?? STATUS_ICON.running}
+            <Text strong style={{ fontSize: 14 }}>
+              {run.product_name || run.run_id}
+            </Text>
+            <Tag color={run.status === 'waiting_human' ? 'warning' : 'processing'}>
+              {STATUS_LABEL[run.status] ?? run.status}
+            </Tag>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{run.site}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>竞品 {run.competitor_asins?.length ?? 0} 个</Text>
+            {run.current_step && (
+              <Text style={{ fontSize: 12, color: '#1677ff' }}>
+                当前：{run.current_step}
+              </Text>
+            )}
+          </div>
+        </Col>
+        <Col flex="160px">
+          <Progress
+            percent={percent}
+            size="small"
+            format={() => `${run.completed_steps}/${run.total_steps}`}
+            status={run.status === 'waiting_human' ? 'exception' : 'active'}
+            strokeColor={run.status === 'waiting_human' ? '#faad14' : undefined}
+          />
+        </Col>
+        <Col>
+          <Button type="primary" size="small" ghost icon={<EyeOutlined />}>
+            查看
+          </Button>
+        </Col>
+      </Row>
+    </Card>
+  );
+}
 
 export default function InputPage() {
   const [form] = Form.useForm<FormValues>();
   const [loading, setLoading] = useState(false);
   const [keywordFile, setKeywordFile] = useState<File | null>(null);
-  const [competitorListingFile, setCompetitorListingFile] = useState<File | null>(null);
+  const [competitorListingFiles, setCompetitorListingFiles] = useState<File[]>([]);
+  const [competitorReviewFiles, setCompetitorReviewFiles] = useState<File[]>([]);
   const [productAttributesFile, setProductAttributesFile] = useState<File | null>(null);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const navigate = useNavigate();
+
+  const fetchRuns = () => {
+    setRunsLoading(true);
+    listRuns()
+      .then(setRuns)
+      .catch(() => {})
+      .finally(() => setRunsLoading(false));
+  };
+
+  useEffect(() => {
+    fetchRuns();
+    const timer = setInterval(fetchRuns, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const { activeRuns, finishedRuns } = useMemo(() => {
+    const active: RunSummary[] = [];
+    const finished: RunSummary[] = [];
+    for (const r of runs) {
+      if (r.status === 'pending' || r.status === 'running' || r.status === 'waiting_human' || r.status === 'paused') {
+        active.push(r);
+      } else {
+        finished.push(r);
+      }
+    }
+    return { activeRuns: active, finishedRuns: finished };
+  }, [runs]);
 
   const handleSubmit = async (values: FormValues) => {
     if (!keywordFile) {
@@ -130,31 +255,148 @@ export default function InputPage() {
     }
 
     setLoading(true);
+    let runId: string | null = null;
     try {
       const res = await createRun({
         product_name: values.product_name?.trim() || '',
         competitor_asins: competitorAsins,
         site: values.site,
       });
-      message.success('任务创建成功');
-      navigate(`/run/${res.run_id}`);
-    } catch (err) {
+      runId = res.run_id;
+    } catch {
       message.error('任务创建失败');
-    } finally {
       setLoading(false);
+      return;
     }
+
+    // Upload sequentially (not Promise.all): each upload is a read-modify-write
+    // on the same run's graph state, so concurrent uploads race and the last
+    // writer clobbers the others (e.g. keyword_library getting lost).
+    const uploadJobs: Array<{ file: File; kind: string }> = [];
+    if (keywordFile) uploadJobs.push({ file: keywordFile, kind: 'keywords' });
+    for (const f of competitorListingFiles) uploadJobs.push({ file: f, kind: 'listings' });
+    for (const f of competitorReviewFiles) uploadJobs.push({ file: f, kind: 'reviews' });
+    if (productAttributesFile) uploadJobs.push({ file: productAttributesFile, kind: 'auto' });
+
+    let uploadFailed = false;
+    for (const job of uploadJobs) {
+      try {
+        await uploadFile(runId, job.file, job.kind);
+      } catch {
+        uploadFailed = true;
+      }
+    }
+    if (uploadFailed) {
+      message.warning('部分文件上传失败，可稍后在任务中重新上传');
+    }
+
+    try {
+      await startRun(runId);
+    } catch {
+      message.error('任务启动失败');
+      setLoading(false);
+      return;
+    }
+
+    message.success('任务创建成功');
+    form.resetFields();
+    setKeywordFile(null);
+    setCompetitorListingFiles([]);
+    setCompetitorReviewFiles([]);
+    setProductAttributesFile(null);
+    fetchRuns();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setLoading(false);
   };
 
+  const finishedColumns = [
+    {
+      title: '产品名称',
+      dataIndex: 'product_name',
+      key: 'product_name',
+      render: (name: string, record: RunSummary) => (
+        <Text>{name || record.run_id}</Text>
+      ),
+    },
+    {
+      title: '站点',
+      dataIndex: 'site',
+      key: 'site',
+      width: 140,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status: string) => {
+        const icon = STATUS_ICON[status];
+        return (
+          <Space size={4}>
+            {icon}
+            <span>{STATUS_LABEL[status] ?? status}</span>
+          </Space>
+        );
+      },
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 160,
+      render: (ts: string) => {
+        try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_: unknown, record: RunSummary) => (
+        <Space size={0}>
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => navigate(`/run/${record.run_id}`)}>
+            查看
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteRun(record.run_id)
+                .then(() => { message.success('已删除'); fetchRuns(); })
+                .catch(() => message.error('删除失败'));
+            }}
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
   return (
-    <div style={{ maxWidth: 720, margin: '0 auto', paddingTop: 40 }}>
+    <div style={{ maxWidth: 800, margin: '0 auto', paddingTop: 24 }}>
+      {/* Active tasks - shown prominently at the top */}
+      {activeRuns.length > 0 && (
+        <Card style={{ marginBottom: 24 }} title={`进行中的任务（${activeRuns.length}）`}>
+          {activeRuns.map((run) => (
+            <ActiveRunCard
+              key={run.run_id}
+              run={run}
+              onClick={() => navigate(`/run/${run.run_id}`)}
+            />
+          ))}
+        </Card>
+      )}
+
+      {/* Create new task form */}
       <Card>
         <Title level={3} style={{ textAlign: 'center', marginBottom: 8 }}>
           Eco Listing 生成器
         </Title>
-        <Paragraph
-          type="secondary"
-          style={{ textAlign: 'center', marginBottom: 24 }}
-        >
+        <Paragraph type="secondary" style={{ textAlign: 'center', marginBottom: 24 }}>
           输入竞品信息和关键词词库，自动生成高质量亚马逊 Listing
         </Paragraph>
 
@@ -168,88 +410,46 @@ export default function InputPage() {
           form={form}
           layout="vertical"
           onFinish={handleSubmit}
-          initialValues={{
-            site: 'amazon.com.au',
-            competitor_asins: [{ asin: '' }],
-          }}
+          initialValues={{ site: 'amazon.com', competitor_asins: [{ asin: '' }] }}
         >
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item
-                name="site"
-                label="站点"
-                rules={[{ required: true, message: '请选择站点' }]}
-              >
+              <Form.Item name="site" label="站点" rules={[{ required: true, message: '请选择站点' }]}>
                 <Select options={SITES} />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item
-                name="product_name"
-                label="产品名称"
-                tooltip="给本次任务起个名字，方便辨认（选填）"
-              >
+              <Form.Item name="product_name" label="产品名称" tooltip="给本次任务起个名字，方便辨认（选填）">
                 <Input placeholder="如：无线蓝牙耳机、瑜伽垫 等" />
               </Form.Item>
             </Col>
           </Row>
 
-          <Form.Item
-            label="竞品 ASIN"
-            tooltip="输入 1~10 个竞品的 Amazon ASIN，系统将自动抓取其 Listing、评论和 Rufus 问答"
-            required
-          >
+          <Form.Item label="竞品 ASIN" tooltip="输入 1~10 个竞品的 Amazon ASIN，系统将自动抓取其 Listing、评论和 Rufus 问答" required>
             <Form.List
               name="competitor_asins"
-              rules={[
-                {
-                  validator: async (_, items) => {
-                    if (!items || items.length < 1) {
-                      return Promise.reject('至少需要 1 个竞品 ASIN');
-                    }
-                  },
-                },
-              ]}
+              rules={[{ validator: async (_, items) => { if (!items || items.length < 1) return Promise.reject('至少需要 1 个竞品 ASIN'); } }]}
             >
               {(fields, { add, remove }, { errors }) => (
                 <>
                   {fields.map((field) => (
-                    <Space
-                      key={field.key}
-                      style={{ display: 'flex', marginBottom: 8 }}
-                      align="baseline"
-                    >
+                    <Space key={field.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
                       <Form.Item
                         {...field}
                         name={[field.name, 'asin']}
                         rules={[
                           { required: true, message: '请填写 ASIN' },
-                          {
-                            validator: (_, value) =>
-                              !value || isValidAsin(value)
-                                ? Promise.resolve()
-                                : Promise.reject('ASIN 格式不正确'),
-                          },
+                          { validator: (_, value) => !value || isValidAsin(value) ? Promise.resolve() : Promise.reject('ASIN 格式不正确') },
                         ]}
                         style={{ marginBottom: 0 }}
                       >
-                        <Input
-                          placeholder="B0XXXXXXXXXX"
-                          style={{ width: 280, textTransform: 'uppercase' }}
-                        />
+                        <Input placeholder="B0XXXXXXXXXX" style={{ width: 280, textTransform: 'uppercase' }} />
                       </Form.Item>
-                      {fields.length > 1 && (
-                        <MinusCircleOutlined onClick={() => remove(field.name)} />
-                      )}
+                      {fields.length > 1 && <MinusCircleOutlined onClick={() => remove(field.name)} />}
                     </Space>
                   ))}
                   {fields.length < 10 && (
-                    <Button
-                      type="dashed"
-                      onClick={() => add({ asin: '' })}
-                      icon={<PlusOutlined />}
-                      style={{ width: 280 }}
-                    >
+                    <Button type="dashed" onClick={() => add({ asin: '' })} icon={<PlusOutlined />} style={{ width: 280 }}>
                       添加竞品 ASIN
                     </Button>
                   )}
@@ -260,52 +460,47 @@ export default function InputPage() {
           </Form.Item>
 
           <Divider orientation="left">
-            <Space>
-              <FileTextOutlined />
-              <span>上传文件</span>
-            </Space>
+            <Space><FileTextOutlined /><span>上传文件</span></Space>
           </Divider>
 
           <Row gutter={16}>
-            <Col span={8}>
-              <FileInput
-                label="关键词词库"
-                hint="鸥鹭出单词报告等"
-                required
-                file={keywordFile}
-                onFileChange={setKeywordFile}
-              />
+            <Col span={12}>
+              <FileInput label="关键词词库" hint="鸥鹭出单词报告等" required file={keywordFile} onFileChange={setKeywordFile} />
             </Col>
-            <Col span={8}>
-              <FileInput
-                label="竞品 Listing 文本"
-                hint="不上传则自动抓取"
-                file={competitorListingFile}
-                onFileChange={setCompetitorListingFile}
-              />
+            <Col span={12}>
+              <FileInput label="本品属性表" hint="已有则跳过认知层分析" file={productAttributesFile} onFileChange={setProductAttributesFile} />
             </Col>
-            <Col span={8}>
-              <FileInput
-                label="本品属性表"
-                hint="已有则跳过认知层分析"
-                file={productAttributesFile}
-                onFileChange={setProductAttributesFile}
-              />
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <FileInput label="竞品 Listing 文本" hint="不上传则自动抓取，支持多文件" multiple files={competitorListingFiles} onFilesChange={setCompetitorListingFiles} />
+            </Col>
+            <Col span={12}>
+              <FileInput label="竞品评论" hint="不上传则自动抓取，支持多文件" multiple files={competitorReviewFiles} onFilesChange={setCompetitorReviewFiles} />
             </Col>
           </Row>
 
           <Form.Item style={{ textAlign: 'center', marginTop: 24 }}>
-            <Button
-              type="primary"
-              htmlType="submit"
-              size="large"
-              loading={loading}
-              style={{ width: 200 }}
-            >
+            <Button type="primary" htmlType="submit" size="large" loading={loading} style={{ width: 200 }}>
               开始生成
             </Button>
           </Form.Item>
         </Form>
+      </Card>
+
+      {/* Finished tasks — always visible */}
+      <Card style={{ marginTop: 24 }} title={`历史任务${finishedRuns.length > 0 ? `（${finishedRuns.length}）` : ''}`}>
+        {finishedRuns.length > 0 ? (
+          <Table
+            columns={finishedColumns}
+            dataSource={finishedRuns.map((r) => ({ ...r, key: r.run_id }))}
+            size="small"
+            pagination={finishedRuns.length > 10 ? { pageSize: 10 } : false}
+            locale={{ emptyText: '暂无历史任务' }}
+          />
+        ) : (
+          <Empty description="暂无历史任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
       </Card>
     </div>
   );

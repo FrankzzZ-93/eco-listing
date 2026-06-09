@@ -12,7 +12,7 @@
 - applicable 中的 target_users 和 use_cases 是否具体？（"年轻妈妈"优于"所有人"）
 - applicable.not_applicable 是否提取了不适用人群/场景？（此项影响售后，很重要）
 - features 是否逐条列出了具体功能（至少 3 条）？
-- rufus_concerns 是否覆盖了主要买家关注点？
+- alex_concerns 是否覆盖了主要买家关注点？
 
 ### 2. 市场分析质量
 - market_standard 是否列出了 2 个及以上竞品共有的卖点？（至少 3 条）

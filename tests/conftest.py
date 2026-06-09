@@ -88,8 +88,14 @@ def _setup_test_prompts():
 
     agents = {
         "research": {
-            "templates": {"rufus_extract": {"active": "v1", "model": "gemini-pro"}},
-            "files": {"rufus_extract_v1.md": "Extract questions from {{ screenshot_count }} screenshots.\nReturn JSON with questions list."},
+            "templates": {
+                "alex_extract": {"active": "v1", "model": "gemini-pro"},
+                "review_summary": {"active": "v1", "model": "gemini-pro"},
+            },
+            "files": {
+                "alex_extract_v1.md": "Extract questions from {{ screenshot_count }} screenshots.\nReturn JSON with questions list.",
+                "review_summary_v1.md": "Summarize reviews:\n{{ customer_reviews }}\nReturn summary JSON.",
+            },
         },
         "product_analyst": {
             "templates": {
@@ -97,7 +103,7 @@ def _setup_test_prompts():
                 "self_eval": {"active": "v1", "model": "claude-sonnet"},
             },
             "files": {
-                "info_fusion_v1.md": "Analyze:\n{{ competitor_listings }}\n{{ review_summary }}\n{{ rufus_questions }}\nReturn product attributes JSON.",
+                "info_fusion_v1.md": "Analyze:\n{{ competitor_listings }}\n{{ review_summary }}\n{{ alex_questions }}\nReturn product attributes JSON.",
                 "self_eval_v1.md": "Evaluate:\n{{ draft }}\nReturn {confidence, notes}.",
             },
         },
@@ -110,12 +116,12 @@ def _setup_test_prompts():
         "copywriter": {
             "templates": {
                 "round_1_draft": {"active": "v1", "model": "gemini-pro"},
-                "round_2_rufus": {"active": "v1", "model": "claude-sonnet"},
+                "round_2_alex": {"active": "v1", "model": "claude-sonnet"},
                 "round_3_compliance": {"active": "v1", "model": "claude-sonnet"},
             },
             "files": {
                 "round_1_draft_v1.md": "Write listing from:\n{{ approved_product_attributes }}\n{{ classified_keywords }}",
-                "round_2_rufus_v1.md": "Optimize with Rufus:\n{{ draft_v1 }}\n{{ product_attributes }}\n{{ rufus_questions }}",
+                "round_2_alex_v1.md": "Optimize with Alex:\n{{ draft_v1 }}\n{{ product_attributes }}\n{{ alex_questions }}",
                 "round_3_compliance_v1.md": "Fix compliance:\n{{ draft_v2 }}\n{{ product_attributes }}\n{{ compliance_rules }}\n{{ previous_violations }}",
             },
         },

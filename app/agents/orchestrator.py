@@ -36,7 +36,11 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
     graph.add_conditional_edges(
         "research",
         _after_research,
-        {"product_analyst": "product_analyst", "wait_upload": "wait_upload"},
+        {
+            "product_analyst": "product_analyst",
+            "wait_upload": "wait_upload",
+            "human_review": "human_review",
+        },
     )
 
     graph.add_edge("wait_upload", "research")
@@ -79,9 +83,17 @@ def _after_human_review(state: ListingState) -> str:
 
 
 def _after_research(state: ListingState) -> str:
-    """After research, check if competitor data is valid."""
+    """After research, decide whether to run cognitive-layer analysis.
+
+    If the user uploaded a ready-made product attribute table, the draft is
+    already populated before the analyst runs — skip `product_analyst` (the
+    competitor info-fusion LLM step) and go straight to human review of the
+    uploaded table. Otherwise fall back to the normal scrape/analyze path.
+    """
     if state.get("status") == "waiting_human":
         return "wait_upload"
+    if MemoryHelper.has(state, "product_attributes_draft"):
+        return "human_review"
     return "product_analyst"
 
 

@@ -6,6 +6,7 @@ import time
 
 from app.agents.base import ToolBox
 from app.config import settings
+from app.llm_settings import PROVIDER_OPENAI_COMPATIBLE, get_listing_llm_config, is_configured
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
 
@@ -13,6 +14,14 @@ from app.memory.shared_memory import MemoryHelper
 async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: three-round iterative listing generation."""
     logs: list[dict] = []
+
+    # Resolve the listing copywriter model. Defaults to codex-cli; users can
+    # switch to an OpenAI-compatible API (Opus/Claude/etc.) in the UI settings.
+    llm_cfg = get_listing_llm_config()
+    use_api = (
+        llm_cfg.get("provider") == PROVIDER_OPENAI_COMPATIBLE and is_configured(llm_cfg)
+    )
+    model_label = llm_cfg.get("model") if use_api else "codex-cli"
 
     # Defensive fallback: human_review now copies the draft when no explicit
     # approval is submitted, but we also degrade gracefully for any historical
@@ -36,38 +45,41 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
             ),
         },
     )
-    v1 = await toolbox.llm.call("gemini-pro", p1)
+    v1 = await toolbox.llm.call("gemini-pro", p1, llm_config=llm_cfg)
     logs.append(
         MemoryHelper.log_action(
             "copywriter",
             "round_1_draft",
-            model="gemini-pro",
+            model=model_label,
             duration_ms=int((time.time() - t0) * 1000),
         )
     )
 
-    # Round 2: Rufus optimization (Claude)
+    # Round 2: Alex optimization (Claude)
     t0 = time.time()
     p2 = toolbox.prompts.render(
         "copywriter",
-        "round_2_rufus",
+        "round_2_alex",
         {
             "draft_v1": json.dumps(v1, ensure_ascii=False),
             "product_attributes": attrs_json,
-            "rufus_questions": json.dumps(
-                state.get("rufus_questions", []), ensure_ascii=False
+            "alex_questions": json.dumps(
+                state.get("alex_questions") or state.get("rufus_questions") or [],
+                ensure_ascii=False,
             ),
         },
     )
     attachments = [
-        p for p in state.get("rufus_screenshots", []) if os.path.exists(p)
+        p
+        for p in (state.get("alex_screenshots") or state.get("rufus_screenshots") or [])
+        if os.path.exists(p)
     ]
-    v2 = await toolbox.llm.call("claude-sonnet", p2, attachments=attachments)
+    v2 = await toolbox.llm.call("claude-sonnet", p2, attachments=attachments, llm_config=llm_cfg)
     logs.append(
         MemoryHelper.log_action(
             "copywriter",
-            "round_2_rufus",
-            model="claude-sonnet",
+            "round_2_alex",
+            model=model_label,
             duration_ms=int((time.time() - t0) * 1000),
         )
     )
@@ -94,7 +106,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
                 "previous_violations": violations_ctx,
             },
         )
-        v3 = await toolbox.llm.call("claude-sonnet", p3)
+        v3 = await toolbox.llm.call("claude-sonnet", p3, llm_config=llm_cfg)
 
         listing_for_check = {
             "title": v3.get("title", ""),

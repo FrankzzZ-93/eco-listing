@@ -13,7 +13,7 @@
   - ✅ 正确写法（场景化）："Lasts through a full day of outdoor use without needing a recharge"
   - ⚠️ 重要约束：场景化表述必须有属性表中的参数作为支撑事实，不得无中生有场景
 
-- **Rufus（问答层）**：亚马逊 AI 购物助手从 Listing 中抓取产品属性回答买家提问，关键参数必须以完整陈述句形式明确写出。句式参考："This [产品] features [属性]." 或 "The [功能] allows [用户行为]."
+- **Alex（问答层）**：亚马逊 AI 购物助手从 Listing 中抓取产品属性回答买家提问，关键参数必须以完整陈述句形式明确写出。句式参考："This [产品] features [属性]." 或 "The [功能] allows [用户行为]."
 
 ---
 
@@ -64,7 +64,7 @@
 - 识别所有"不适用"、"警告"、"不含"信息
 - 提取所有可量化参数（尺寸、重量、材质、颜色、数量等）
 - 读取包装清单
-- 读取 Rufus 买家关注点
+- 读取 Alex 买家关注点
 
 ### 2. 关键词使用计划
 - A 类大词：确定标题靠前位置覆盖
@@ -102,9 +102,9 @@
 - 来源：属性表"打动买家的点"第二三条目 + 差异化优势
 - 选取 2-3 个有明确参数支撑的功能，覆盖 B 类核心词
 
-**Point 3 — Rufus 参数覆盖**：
-- 来源：属性表"Rufus 买家关注点"章节
-- 将每个 Rufus 答案改写为完整陈述句嵌入
+**Point 3 — Alex 参数覆盖**：
+- 来源：属性表"Alex 买家关注点"章节
+- 将每个 Alex 答案改写为完整陈述句嵌入
 - 必须将所有使用限制和警告信息嵌入此点或 Point 4
 - 覆盖 C 类长尾场景词
 
@@ -125,7 +125,7 @@
   2. **KEY FEATURES**：逐条列出属性表中所有已确认功能
   3. **SPECIFICATIONS**：直接列出所有可量化参数
   4. **HOW IT WORKS**：如属性表有使用说明则写入，否则省略
-  5. **FAQ**：将属性表 Rufus 关注点转化为 FAQ 格式
+  5. **FAQ**：将属性表 Alex 关注点转化为 FAQ 格式
   6. **WHAT'S IN THE BOX**：逐项列出包装清单
 
 ### Search Terms（后台关键词）
@@ -148,7 +148,7 @@
   "description": "完整 Description（含 HTML 标签）",
   "search_terms": ["word1", "word2", "..."],
   "analysis": {
-    "strategy_summary": "一段话总结写作策略：核心卖点、A 类大词、回应的用户痛点、Rufus 覆盖点、跨字段关键词布局",
+    "strategy_summary": "一段话总结写作策略：核心卖点、A 类大词、回应的用户痛点、Alex 覆盖点、跨字段关键词布局",
     "keyword_coverage": {
       "a_class_in_title": ["标题中覆盖的 A 类词"],
       "b_class_in_bullets": ["五点中覆盖的 B 类词"],
@@ -171,4 +171,4 @@
 - D 类排除词未出现在任何字段
 - ST 字节数 < 249，无标点，无 Title/Bullet 重复词
 - 所有"不适用"和"警告"信息已如实体现
-- 所有 Rufus 关注点已以完整陈述句覆盖
+- 所有 Alex 关注点已以完整陈述句覆盖

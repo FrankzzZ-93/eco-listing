@@ -54,6 +54,16 @@ ls ~/.codex/auth.json   # 存在即表示已登录
 
 > 如果跳过这一步，任务会在"竞品抓取/文案生成"阶段报 `CodexExecError`。
 
+### 2.3 （可选）Listing 文案撰写使用其他模型
+
+默认所有 LLM 调用都走 Codex CLI。如需让 **Listing 文案撰写** 环节改用 Opus / Claude 等模型，可在前端顶部「模型设置」中切换为「OpenAI 兼容 API」，并填写：
+
+- **Base URL（request path）**：中转站/服务的接口地址，填到根地址或 `/v1` 即可（会自动补全为 `/v1/chat/completions`）。
+- **Model**：模型 ID（由服务商决定，如 `claude-opus-4-20250514`）。
+- **API Key**：中转站或服务商提供的密钥。
+
+保存前可点「测试连接」校验配置。该设置仅作用于文案撰写环节，其他步骤仍使用 codex-cli；配置持久化在项目根目录 `llm_settings.json`（含密钥，已在 `.gitignore` 中忽略，请勿入库）。不配置则保持默认 codex-cli 行为。
+
 ---
 
 ## 3. 部署后端

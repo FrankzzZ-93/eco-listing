@@ -132,9 +132,9 @@ async def main():
             with open(save_path, "wb") as out:
                 out.write(content)
             s = graph.get_state(config)
-            existing = s.values.get("rufus_screenshots", []) if s else []
+            existing = (s.values.get("alex_screenshots") or s.values.get("rufus_screenshots") or []) if s else []
             existing.append(save_path)
-            await graph.aupdate_state(config, {"rufus_screenshots": existing})
+            await graph.aupdate_state(config, {"alex_screenshots": existing})
         else:
             data = json.loads(content)
             await graph.aupdate_state(

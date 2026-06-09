@@ -10,13 +10,13 @@
 
 ```
 阶段一（认知层）：构建产品认知模型
-  竞品ASIN → Listing抓取 → 评论分析 → Rufus问题获取 → AI融合分析 → 本品属性表 → 人工审核 ✅
+  竞品ASIN → Listing抓取 → 评论分析 → Alex问题获取 → AI融合分析 → 本品属性表 → 人工审核 ✅
 
 阶段二（语义层）：构建关键词语义库
   鸥鹭反查关键词 → 人工清洗 → AI分类建模 → 分类关键词词库 ✅
 
 阶段三（表达层）：多模型迭代生成 Listing
-  属性表 + 分类关键词 → 初稿（模型A） → 二稿（模型B + Rufus） → 三稿（合规校正） → ST词频优化 → 最终输出 ✅
+  属性表 + 分类关键词 → 初稿（模型A） → 二稿（模型B + Alex） → 三稿（合规校正） → ST词频优化 → 最终输出 ✅
 ```
 
 ---
@@ -68,14 +68,14 @@
 
 ---
 
-### Step 2（对应 listing.md Step 1.3）— Rufus 截图获取
+### Step 2（对应 listing.md Step 1.3）— Alex 截图获取
 
 
 | 项目        | 说明                                                        |
 | --------- | --------------------------------------------------------- |
-| **操作描述**  | 从亚马逊前台获取每个竞品的 Rufus（AI 问答）截图，保存到本地，命名为 `{ASIN}_rufus.png` |
+| **操作描述**  | 从亚马逊前台获取每个竞品的 Alex（AI 问答）截图，保存到本地，命名为 `{ASIN}_alex.png` |
 | **当前工具**  | 手动截图保存                                                    |
-| **自动化方向** | 浏览器自动化（Playwright/Selenium）自动截取 Rufus 区域                  |
+| **自动化方向** | 浏览器自动化（Playwright/Selenium）自动截取 Alex 区域                  |
 
 
 **输入：**
@@ -93,8 +93,8 @@
 
 ```json
 {
-  "rufus_screenshots": ["ASIN_1_rufus.png", "ASIN_2_rufus.png"],
-  "rufus_questions": [
+  "alex_screenshots": ["ASIN_1_alex.png", "ASIN_2_alex.png"],
+  "alex_questions": [
     "Is this product suitable for ...?",
     "How does this compare to ...?"
   ]
@@ -148,7 +148,7 @@
 
 | 项目        | 说明                                                                                              |
 | --------- | ----------------------------------------------------------------------------------------------- |
-| **操作描述**  | 将竞品 Listing 文本、Rufus 截图、Review 截图统一输入 AI（Cherry Studio 调用 Gemini，已预设 Prompt），提炼产品属性信息，形成本品属性表初稿 |
+| **操作描述**  | 将竞品 Listing 文本、Alex 截图、Review 截图统一输入 AI（Cherry Studio 调用 Gemini，已预设 Prompt），提炼产品属性信息，形成本品属性表初稿 |
 | **当前工具**  | Cherry Studio + Gemini（预设提示词）                                                                   |
 | **自动化方向** | 多模态 LLM Agent（支持文本+图片输入）                                                                        |
 
@@ -160,8 +160,8 @@
   "competitor_listings": [],
   "review_summary": {},
   "review_screenshots": [],
-  "rufus_questions": [],
-  "rufus_screenshots": []
+  "alex_questions": [],
+  "alex_screenshots": []
 }
 ```
 
@@ -347,14 +347,14 @@
 
 ---
 
-### Step 9（对应 listing.md Step 3.2）— 二稿优化（模型 B + Rufus）
+### Step 9（对应 listing.md Step 3.2）— 二稿优化（模型 B + Alex）
 
 
 | 项目        | 说明                                                             |
 | --------- | -------------------------------------------------------------- |
-| **操作描述**  | 用第 8 步初稿信息，连同本品属性表和 Rufus 截图，交给第二个模型做优化，生成新的优化后的标题、五点、产品描述和 ST |
+| **操作描述**  | 用第 8 步初稿信息，连同本品属性表和 Alex 截图，交给第二个模型做优化，生成新的优化后的标题、五点、产品描述和 ST |
 | **当前工具**  | Google AI Studio / Cherry Studio（第二个模型）                        |
-| **自动化方向** | 第二个 LLM Agent，侧重 Rufus 问题覆盖和文案优化                               |
+| **自动化方向** | 第二个 LLM Agent，侧重 Alex 问题覆盖和文案优化                               |
 
 
 **输入：**
@@ -363,12 +363,12 @@
 {
   "draft_listing_v1": {},
   "approved_product_attributes": {},
-  "rufus_questions": [],
-  "rufus_screenshots": []
+  "alex_questions": [],
+  "alex_screenshots": []
 }
 ```
 
-> **关键点**：这是流程中的"质量跃迁点"。引入 Rufus 数据使 Listing 能回应亚马逊 AI 助手可能提出的消费者问题，提升 A9/COSMO 算法匹配度。
+> **关键点**：这是流程中的"质量跃迁点"。引入 Alex 数据使 Listing 能回应亚马逊 AI 助手可能提出的消费者问题，提升 A9/COSMO 算法匹配度。
 
 **输出：**
 
@@ -499,7 +499,7 @@
 ┌─────────────────────────── 阶段一：认知层 ───────────────────────────┐
 │                                                                      │
 │  竞品ASIN ──→ [Step1] Listing抓取 ──→ competitor_listings            │
-│           ──→ [Step2] Rufus截图    ──→ rufus_questions/screenshots   │
+│           ──→ [Step2] Alex截图    ──→ alex_questions/screenshots   │
 │           ──→ [Step3] 评论分析     ──→ review_summary/screenshots    │
 │                         │                                            │
 │                         ▼                                            │
@@ -536,7 +536,7 @@
 │                         ▼                                            │
 │              [Step8]  初稿生成(Google AI Studio) ──→ v1              │
 │                         │                                            │
-│              v1 + attributes + rufus                                 │
+│              v1 + attributes + alex                                 │
 │                         ▼                                            │
 │              [Step9]  二稿优化(模型B)            ──→ v2              │
 │                         │                                            │
@@ -582,7 +582,7 @@
 1. **三层分离**：认知（属性表）→ 语义（关键词）→ 表达（Listing），各层输出独立可复用
 2. **多模型协作**：初稿、优化、合规三轮迭代，利用不同模型的优势（Gemini 生成力、Claude 分析力、合规模型约束力）
 3. **人机协同**：关键节点保留人工审核（Step 5 属性表审核、Step 6 关键词清洗），确保数据质量
-4. **Rufus 覆盖**：将亚马逊 AI 助手（Rufus）的问题融入文案优化，提升 COSMO 算法匹配
+4. **Alex 覆盖**：将亚马逊 AI 助手（Alex）的问题融入文案优化，提升 COSMO 算法匹配
 5. **ST 差异化补充**：通过词频分析确保 Search Terms 与正文互补而非重复，最大化关键词覆盖率
 
 ---
@@ -595,7 +595,7 @@
 | 🔴 P0 | Step 4, 7, 8, 9, 10 | 核心 AI 生成环节，可通过 API 调用实现全自动 |
 | 🟡 P1 | Step 1, 3           | 数据采集环节，可通过爬虫/浏览器自动化实现      |
 | 🟡 P1 | Step 11             | 词频分析可本地化，无需依赖外部网站          |
-| 🟢 P2 | Step 2              | Rufus 截图可通过浏览器自动化获取        |
+| 🟢 P2 | Step 2              | Alex 截图可通过浏览器自动化获取        |
 | 🟢 P2 | Step 6              | 依赖欧鹭平台，需确认 API 可用性         |
 | ⚪ P3  | Step 5, 12          | 人工审核和后台上传，短期内保留人工操作        |
 

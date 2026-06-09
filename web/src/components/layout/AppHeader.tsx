@@ -1,5 +1,5 @@
 import { Layout, Typography, Space, Button } from 'antd';
-import { RocketOutlined, SettingOutlined } from '@ant-design/icons';
+import { RocketOutlined, SettingOutlined, ApiOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 const { Header } = Layout;
@@ -30,6 +30,13 @@ export default function AppHeader() {
       </Space>
 
       <Space>
+        <Button
+          type={location.pathname === '/settings' ? 'primary' : 'text'}
+          icon={<ApiOutlined />}
+          onClick={() => navigate('/settings')}
+        >
+          模型设置
+        </Button>
         <Button
           type={location.pathname === '/prompts' ? 'primary' : 'text'}
           icon={<SettingOutlined />}

@@ -24,7 +24,7 @@ export async function submitReview(runId: string, review: ReviewSubmission): Pro
 export async function uploadFile(
   runId: string,
   file: File,
-  dataType: 'listings' | 'keywords' | 'reviews' | 'auto' = 'auto',
+  dataType: 'listings' | 'keywords' | 'reviews' | 'product_attributes' | 'auto' = 'auto',
 ): Promise<void> {
   const form = new FormData();
   form.append('file', file);

@@ -35,8 +35,8 @@ async def test_valid_listings_pass(mock_toolbox):
         "competitor_listings": [
             {"title": "Test Product", "bullet_points": ["Feature 1"]}
         ],
-        "rufus_questions": [],
-        "rufus_screenshots": [],
+        "alex_questions": [],
+        "alex_screenshots": [],
     }
     result = await research_node(state, mock_toolbox)
     assert result["status"] == "running"

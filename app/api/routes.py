@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -149,8 +150,15 @@ async def list_runs():
                 ):
                     status = "waiting_human"
 
+                # When a ready-made attribute table is uploaded, the competitor
+                # scraping step is intentionally skipped — treat it as done so
+                # progress doesn't get stuck on "竞品数据采集".
+                attrs_present = MemoryHelper.has(snapshot, "product_attributes_draft")
                 for key, label in progress_keys:
-                    if MemoryHelper.has(snapshot, key):
+                    done = MemoryHelper.has(snapshot, key)
+                    if not done and key == "competitor_listings" and attrs_present:
+                        done = True
+                    if done:
                         completed_steps += 1
                     elif not current_step:
                         current_step = label
@@ -200,7 +208,7 @@ async def get_run(run_id: str):
         "competitor_listings",
         "customer_reviews",
         "review_summary",
-        "rufus_questions",
+        "alex_questions",
         "product_attributes_draft",
         "approved_product_attributes",
         "keyword_library",
@@ -228,11 +236,16 @@ async def get_run(run_id: str):
     mem_snapshot["has_keywords_reviewed"] = has_kw and past_review
 
     live_codex = None
+    research_progress = None
     if effective_status == "running":
         try:
             live_codex = codex_progress.snapshot(run_id)
         except Exception:
             live_codex = None
+        try:
+            research_progress = codex_progress.scrape_snapshot(run_id)
+        except Exception:
+            research_progress = None
 
     return {
         "run_id": run_id,
@@ -244,6 +257,7 @@ async def get_run(run_id: str):
         "agent_log": snapshot.get("agent_log", [])[-20:],
         "error": snapshot.get("error") or None,
         "live_codex": live_codex,
+        "research_progress": research_progress,
     }
 
 
@@ -251,7 +265,7 @@ _VIEWABLE_KEYS = frozenset([
     "competitor_listings",
     "customer_reviews",
     "review_summary",
-    "rufus_questions",
+    "alex_questions",
     "product_attributes_draft",
     "approved_product_attributes",
     "keyword_library",
@@ -459,6 +473,25 @@ async def upload_data(
         next_nodes = cur_state.next if cur_state and cur_state.next else ()
         is_waiting_keyword = "keyword_upload" in next_nodes
 
+        # Ready-made 本品属性表 (product attribute table). When provided we seed it
+        # as the analyst draft so the cognitive-layer LLM analysis is skipped
+        # entirely (see research_node / orchestrator routing) and the uploaded
+        # table is used as-is.
+        if data_type == "product_attributes":
+            if not (file.filename and file.filename.lower().endswith(".json")):
+                raise HTTPException(400, "本品属性表请上传 JSON 文件")
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                raise HTTPException(400, "本品属性表 JSON 解析失败")
+            if not isinstance(data, dict) or not data:
+                raise HTTPException(400, "本品属性表需为非空 JSON 对象")
+            update = {"product_attributes_draft": data}
+            if not is_pending:
+                update.update({"status": "running", "pending_action": {}})
+            await graph.aupdate_state(config, update, **update_kwargs)
+            return {"status": "accepted", "product_attributes": True}
+
         if file.filename and file.filename.lower().endswith(".xlsx") and data_type in ("keywords", "auto"):
             cleaned = toolbox.keyword.clean(content)
             update: dict = {"keyword_library": cleaned}
@@ -523,9 +556,12 @@ async def upload_data(
             save_path = toolbox.file_store.run_dir(run_id) + f"/{file.filename}"
             with open(save_path, "wb") as f:
                 f.write(content)
-            existing_screenshots = cur_state.values.get("rufus_screenshots", []) if cur_state and cur_state.values else []
+            existing_screenshots = (
+                (cur_state.values.get("alex_screenshots") or cur_state.values.get("rufus_screenshots") or [])
+                if cur_state and cur_state.values else []
+            )
             existing_screenshots.append(save_path)
-            await graph.aupdate_state(config, {"rufus_screenshots": existing_screenshots}, **update_kwargs)
+            await graph.aupdate_state(config, {"alex_screenshots": existing_screenshots}, **update_kwargs)
             return {"status": "accepted", "saved": save_path}
         else:
             raise HTTPException(400, "支持 .json / .xlsx / .md / .txt / .png / .jpg 文件")
@@ -552,6 +588,87 @@ async def get_final(run_id: str):
             "markdown": f"/artifacts/{run_id}/final/final_listing.md",
         },
     }
+
+
+# --- LLM Settings Endpoints ---
+
+
+class UpdateLlmSettingsRequest(BaseModel):
+    provider: str = "codex-cli"
+    base_url: str = ""
+    model: str = ""
+    # Optional: when omitted/empty on an existing key, the stored key is kept.
+    api_key: Optional[str] = None
+
+
+class TestLlmSettingsRequest(BaseModel):
+    provider: str = "openai_compatible"
+    base_url: str = ""
+    model: str = ""
+    api_key: Optional[str] = None
+
+
+@router.get("/settings/llm")
+async def get_llm_settings():
+    from app import llm_settings
+
+    return llm_settings.public_view(llm_settings.get_listing_llm_config())
+
+
+@router.put("/settings/llm")
+async def update_llm_settings(req: UpdateLlmSettingsRequest):
+    from app import llm_settings
+
+    if req.provider not in llm_settings.VALID_PROVIDERS:
+        raise HTTPException(400, f"不支持的 provider: {req.provider}")
+
+    current = llm_settings.get_listing_llm_config()
+    # Keep the existing API key when the client doesn't send a new one (the
+    # GET response masks it, so the form normally submits an empty key).
+    api_key = req.api_key if req.api_key else current.get("api_key", "")
+
+    new_cfg = {
+        "provider": req.provider,
+        "base_url": (req.base_url or "").strip(),
+        "model": (req.model or "").strip(),
+        "api_key": api_key,
+    }
+
+    if req.provider == llm_settings.PROVIDER_OPENAI_COMPATIBLE:
+        if not new_cfg["base_url"]:
+            raise HTTPException(400, "OpenAI 兼容模式需要填写 Base URL")
+        if not new_cfg["model"]:
+            raise HTTPException(400, "OpenAI 兼容模式需要填写 Model")
+        if not new_cfg["api_key"]:
+            raise HTTPException(400, "OpenAI 兼容模式需要填写 API Key")
+
+    saved = llm_settings.save_llm_settings(new_cfg)
+    return llm_settings.public_view(saved)
+
+
+@router.post("/settings/llm/test")
+async def test_llm_settings(req: TestLlmSettingsRequest):
+    """Probe an OpenAI-compatible endpoint with a tiny request (no persistence)."""
+    from app import llm_settings
+    from app.tools import openai_compatible
+
+    if req.provider != llm_settings.PROVIDER_OPENAI_COMPATIBLE:
+        return {"ok": True, "message": "codex-cli 无需测试连接"}
+
+    # Fall back to the stored key so the user can test without re-entering it.
+    api_key = req.api_key or llm_settings.get_listing_llm_config().get("api_key", "")
+
+    candidate = {
+        "provider": llm_settings.PROVIDER_OPENAI_COMPATIBLE,
+        "base_url": (req.base_url or "").strip(),
+        "model": (req.model or "").strip(),
+        "api_key": api_key or "",
+    }
+    if not llm_settings.is_configured(candidate):
+        return {"ok": False, "message": "请先填写完整的 Base URL、Model 和 API Key"}
+
+    ok, message = await openai_compatible.probe(candidate)
+    return {"ok": ok, "message": message}
 
 
 # --- Prompt Management Endpoints ---

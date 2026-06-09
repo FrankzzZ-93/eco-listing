@@ -10,6 +10,7 @@ __pycache__/
 # --- Secrets / local config ---
 .env
 .env.local
+llm_settings.json
 
 # --- Node / frontend ---
 web/node_modules/

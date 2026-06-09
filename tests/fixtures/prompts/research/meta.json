@@ -1,1 +1,1 @@
-{"templates": {"rufus_extract": {"active": "v1", "model": "gemini-pro"}}}
+{"templates": {"alex_extract": {"active": "v1", "model": "gemini-pro"}, "review_summary": {"active": "v1", "model": "gemini-pro"}}}

@@ -123,7 +123,7 @@ function FileInput({ label, hint, required, multiple, file, files, onFileChange,
 }
 
 const WORKFLOW_STEPS = [
-  { title: '认知层', description: '竞品抓取 → 评论分析 → Rufus 问答 → 本品属性表', icon: <SearchOutlined /> },
+  { title: '认知层', description: '竞品抓取 → 评论分析 → Alex 问答 → 本品属性表', icon: <SearchOutlined /> },
   { title: '语义层', description: '关键词分类建模', icon: <TagsOutlined /> },
   { title: '表达层', description: '多轮迭代生成 Listing + ST 优化', icon: <EditOutlined /> },
 ];
@@ -272,11 +272,11 @@ export default function InputPage() {
     // Upload sequentially (not Promise.all): each upload is a read-modify-write
     // on the same run's graph state, so concurrent uploads race and the last
     // writer clobbers the others (e.g. keyword_library getting lost).
-    const uploadJobs: Array<{ file: File; kind: string }> = [];
+    const uploadJobs: Array<{ file: File; kind: 'listings' | 'keywords' | 'reviews' | 'product_attributes' | 'auto' }> = [];
     if (keywordFile) uploadJobs.push({ file: keywordFile, kind: 'keywords' });
     for (const f of competitorListingFiles) uploadJobs.push({ file: f, kind: 'listings' });
     for (const f of competitorReviewFiles) uploadJobs.push({ file: f, kind: 'reviews' });
-    if (productAttributesFile) uploadJobs.push({ file: productAttributesFile, kind: 'auto' });
+    if (productAttributesFile) uploadJobs.push({ file: productAttributesFile, kind: 'product_attributes' });
 
     let uploadFailed = false;
     for (const job of uploadJobs) {
@@ -425,7 +425,7 @@ export default function InputPage() {
             </Col>
           </Row>
 
-          <Form.Item label="竞品 ASIN" tooltip="输入 1~10 个竞品的 Amazon ASIN，系统将自动抓取其 Listing、评论和 Rufus 问答" required>
+          <Form.Item label="竞品 ASIN" tooltip="输入 1~10 个竞品的 Amazon ASIN，系统将自动抓取其 Listing、评论和 Alex 问答" required>
             <Form.List
               name="competitor_asins"
               rules={[{ validator: async (_, items) => { if (!items || items.length < 1) return Promise.reject('至少需要 1 个竞品 ASIN'); } }]}
@@ -468,7 +468,7 @@ export default function InputPage() {
               <FileInput label="关键词词库" hint="鸥鹭出单词报告等" required file={keywordFile} onFileChange={setKeywordFile} />
             </Col>
             <Col span={12}>
-              <FileInput label="本品属性表" hint="已有则跳过认知层分析" file={productAttributesFile} onFileChange={setProductAttributesFile} />
+              <FileInput label="本品属性表" hint="上传则跳过认知层分析，直接使用（JSON 格式）" file={productAttributesFile} onFileChange={setProductAttributesFile} />
             </Col>
           </Row>
           <Row gutter={16}>

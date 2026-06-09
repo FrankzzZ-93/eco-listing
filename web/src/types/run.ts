@@ -18,7 +18,7 @@ export interface MemorySnapshot {
   has_competitor_listings: boolean;
   has_customer_reviews: boolean;
   has_review_summary: boolean;
-  has_rufus_questions: boolean;
+  has_alex_questions: boolean;
   has_product_attributes_draft: boolean;
   has_approved_product_attributes: boolean;
   has_keyword_library: boolean;
@@ -43,6 +43,12 @@ export interface LiveCodexProgress {
   last_change_at: string;
 }
 
+export interface ResearchProgress {
+  phase: string;
+  done: number;
+  total: number;
+}
+
 export interface RunDetail {
   run_id: string;
   status: RunStatus;
@@ -52,6 +58,7 @@ export interface RunDetail {
   agent_log: AgentLog[];
   error: string | null;
   live_codex?: LiveCodexProgress | null;
+  research_progress?: ResearchProgress | null;
 }
 
 export interface CreateRunRequest {

@@ -19,8 +19,8 @@ async def test_copywriter_produces_listing(mock_toolbox):
             "functional": [{"keyword": "waterproof", "search_volume": 100}],
             "scenario": [{"keyword": "outdoor", "search_volume": 50}],
         },
-        "rufus_questions": ["Is it waterproof?"],
-        "rufus_screenshots": [],
+        "alex_questions": ["Is it waterproof?"],
+        "alex_screenshots": [],
     }
     result = await copywriter_node(state, mock_toolbox)
 

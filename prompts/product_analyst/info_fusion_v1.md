@@ -8,8 +8,8 @@ You are a senior Amazon product analyst. Your job is to synthesize competitor re
 ### Review Summary (pros, cons, high-frequency issues, usage scenarios, user language)
 {{ review_summary }}
 
-### Rufus Customer Questions
-{{ rufus_questions }}
+### Alex Customer Questions
+{{ alex_questions }}
 
 ## Task
 
@@ -43,4 +43,4 @@ Return a JSON object:
 - Be SPECIFIC, not generic. "Young mothers with toddlers" is better than "parents"
 - selling_points should directly address pain_points where possible
 - language_patterns should use the exact words buyers use, not marketing jargon
-- If Rufus questions reveal concerns not covered by reviews, address them in pain_points
+- If Alex questions reveal concerns not covered by reviews, address them in pain_points

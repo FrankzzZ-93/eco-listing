@@ -42,6 +42,9 @@ async def lifespan(app: FastAPI):
         _state.set_toolbox(toolbox)
         _state.set_graph(graph)
 
+        from app.llm_settings import load_llm_settings
+        load_llm_settings()
+
         _state.load_registry()
         await _recover_stale_runs(graph)
 

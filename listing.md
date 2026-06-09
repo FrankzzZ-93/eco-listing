@@ -45,14 +45,14 @@ https://www.amazon.com.au/dp 拼上 asin，即可打开商品链接
 user_language = 后面关键词和文案的核心来源
 
 ---
-🔹 Step 1.3 Rufus 问题获取 ⭐（你修正的点）
+🔹 Step 1.3 Alex 问题获取 ⭐（你修正的点）
 输入
 {
   "competitor_urls": []
 }
 输出
 {
-  "rufus_questions": []
+  "alex_questions": []
 }
 
 ---
@@ -61,7 +61,7 @@ user_language = 后面关键词和文案的核心来源
 {
   "competitor_listings": [],
   "review_summary": {},
-  "rufus_questions": []
+  "alex_questions": []
 }
 
 ---
@@ -164,7 +164,7 @@ Keyword Clustering Agent
 }
 
 ---
-🔹 Step 3.2 二稿生成（换模型 + 加Rufus）
+🔹 Step 3.2 二稿生成（换模型 + 加Alex）
 👉 这是你流程里的“质量跃迁点”
 
 ---
@@ -172,7 +172,7 @@ Keyword Clustering Agent
 {
   "draft_listing_v1": {},
   "approved_product_attributes": {},
-  "rufus_questions": []
+  "alex_questions": []
 }
 
 ---
@@ -228,7 +228,7 @@ Keyword Clustering Agent
 竞品URL
  → Listing抓取
  → 评论分析
- → Rufus问题
+ → Alex问题
  → Info Fusion
  → 属性表
  → 人工审核 ✅
@@ -240,7 +240,7 @@ Keyword Clustering Agent
 阶段三（表达层）
 属性表 + 分类关键词
  → 初稿（模型A）
- → 二稿（模型B + Rufus）
+ → 二稿（模型B + Alex）
  → 三稿（结构优化）
  → ST词频优化
  → 最终输出 ✅

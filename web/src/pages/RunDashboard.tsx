@@ -6,6 +6,7 @@ import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
 import DataPreviewCollapse from '../components/status/DataPreviewCollapse';
 import LiveCodexBanner from '../components/status/LiveCodexBanner';
+import ResearchProgressBanner from '../components/status/ResearchProgressBanner';
 import AttributesReviewPanel from '../components/review/AttributesReviewPanel';
 import KeywordReviewPanel from '../components/review/KeywordReviewPanel';
 import ListingPreview from '../components/output/ListingPreview';
@@ -302,6 +303,9 @@ export default function RunDashboard() {
                         />
                       )}
                       <Title level={5}>执行日志</Title>
+                      {run?.status === 'running' && run.research_progress && (
+                        <ResearchProgressBanner progress={run.research_progress} />
+                      )}
                       {run?.status === 'running' && run.live_codex && (
                         <LiveCodexBanner progress={run.live_codex} />
                       )}

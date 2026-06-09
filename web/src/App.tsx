@@ -3,6 +3,7 @@ import AppLayout from './components/layout/AppLayout';
 import InputPage from './pages/InputPage';
 import RunDashboard from './pages/RunDashboard';
 import PromptsPage from './pages/PromptsPage';
+import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="/run/:runId" element={<RunDashboard />} />
         <Route path="/run/:runId/:tab" element={<RunDashboard />} />
         <Route path="/prompts" element={<PromptsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   );

@@ -36,6 +36,12 @@ current_run_id: ContextVar[Optional[str]] = ContextVar(
 #                                  type change (or start).
 _progress: dict[str, dict] = {}
 
+# run_id -> research scrape progress. Tracks the higher-level "scraping item
+# x of y competitors" counter for the research node (distinct from the
+# per-codex-call event progress above). Stored fields: phase (str), done
+# (int), total (int).
+_scrape: dict[str, dict] = {}
+
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -92,3 +98,24 @@ def snapshot(run_id: str) -> Optional[dict]:
         "items_completed": entry["items_completed"],
         "last_change_at": entry["last_change_at_iso"],
     }
+
+
+# --- Research scrape progress (x / y competitors) ---
+
+
+def set_scrape(run_id: str, phase: str, done: int, total: int) -> None:
+    """Record the research scrape counter for ``run_id``."""
+    _scrape[run_id] = {"phase": phase, "done": done, "total": total}
+
+
+def clear_scrape(run_id: str) -> None:
+    """Drop the scrape entry for ``run_id``. Safe when nothing is tracked."""
+    _scrape.pop(run_id, None)
+
+
+def scrape_snapshot(run_id: str) -> Optional[dict]:
+    """Return the current research scrape progress, or ``None`` if untracked."""
+    entry = _scrape.get(run_id)
+    if entry is None:
+        return None
+    return {"phase": entry["phase"], "done": entry["done"], "total": entry["total"]}

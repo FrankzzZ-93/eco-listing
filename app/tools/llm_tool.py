@@ -1,9 +1,18 @@
-"""LLM tool backed by Codex CLI — uses the locally logged-in account."""
+"""LLM tool.
+
+By default every call is backed by the Codex CLI (uses the locally logged-in
+account). Callers may pass an ``llm_config`` (see ``app.llm_settings``) to route
+a specific call to an OpenAI-compatible HTTP endpoint instead — used by the
+listing copywriter so users can run it on Opus/Claude/other models via a relay
+station, while all other agents stay on Codex.
+"""
 from __future__ import annotations
 
 import json
 import logging
 
+from app.llm_settings import PROVIDER_OPENAI_COMPATIBLE, is_configured
+from app.tools import openai_compatible
 from app.tools.codex_exec import codex_exec
 
 logger = logging.getLogger(__name__)
@@ -19,6 +28,7 @@ class LLMTool:
         prompt: str,
         attachments: list[str] | None = None,
         response_format: str = "json",
+        llm_config: dict | None = None,
     ) -> dict:
         if attachments:
             prompt = self._append_attachment_note(prompt, attachments)
@@ -29,9 +39,27 @@ class LLMTool:
                 "No markdown fences, no explanation, no text before or after the JSON."
             )
 
+        # Route to an OpenAI-compatible API backend only when explicitly
+        # configured for this call; otherwise fall back to the Codex CLI.
+        if (
+            llm_config
+            and llm_config.get("provider") == PROVIDER_OPENAI_COMPATIBLE
+            and is_configured(llm_config)
+        ):
+            content = await openai_compatible.chat(llm_config, prompt)
+            return self._parse_api_content(content, response_format)
+
         raw = await self._codex_exec(prompt)
-        parsed = self._parse_response(raw, response_format)
-        return parsed
+        return self._parse_response(raw, response_format)
+
+    def _parse_api_content(self, content: str, response_format: str) -> dict:
+        """Parse assistant content from the API into the expected shape."""
+        text = content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        if response_format == "json":
+            return self._extract_json(text)
+        return {"text": text}
 
     async def _codex_exec(self, prompt: str) -> str:
         """Delegates to the shared `codex_exec` runner.

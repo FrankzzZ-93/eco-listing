@@ -56,8 +56,8 @@ class ListingState(TypedDict):
     # Phase 1: 认知层
     competitor_listings: list[dict]
     review_summary: dict
-    rufus_questions: list[str]
-    rufus_screenshots: list[str]
+    alex_questions: list[str]
+    alex_screenshots: list[str]
     product_attributes_draft: dict
     product_attributes_confidence: float
     product_attributes_notes: str
@@ -405,7 +405,7 @@ class PromptRegistry:
 prompts/
   research/
     meta.json
-    rufus_extract_v1.md
+    alex_extract_v1.md
   product_analyst/
     meta.json
     info_fusion_v1.md
@@ -416,7 +416,7 @@ prompts/
   copywriter/
     meta.json
     round_1_draft_v1.md
-    round_2_rufus_v1.md
+    round_2_alex_v1.md
     round_3_compliance_v1.md
 ```
 
@@ -426,7 +426,7 @@ prompts/
 {
   "templates": {
     "round_1_draft":     { "active": "v1", "model": "gemini-pro" },
-    "round_2_rufus":     { "active": "v1", "model": "claude-sonnet" },
+    "round_2_alex":     { "active": "v1", "model": "claude-sonnet" },
     "round_3_compliance":{ "active": "v1", "model": "claude-sonnet" }
   }
 }
@@ -453,7 +453,7 @@ class ToolBox:
 ### 5.2 Research Agent (`app/agents/research.py`)
 
 > MVP 版本：Research Agent 不做自动采集，仅校验用户上传的数据并写入 State。
-> 如果用户上传了 Rufus 截图，使用 LLM 多模态提取问题列表。
+> 如果用户上传了 Alex 截图，使用 LLM 多模态提取问题列表。
 
 ```python
 import time, os
@@ -462,7 +462,7 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph 节点：校验用户上传的竞品数据，写入 State。
     
     此节点在 interrupt 后执行——用户通过 upload API 将数据注入 State，
-    然后 resume graph 时运行本节点做校验和 Rufus 解析。
+    然后 resume graph 时运行本节点做校验和 Alex 解析。
     """
     logs = []
     t0 = time.time()
@@ -493,22 +493,22 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
     logs.append(MemoryHelper.log_action("research", "validate_listings",
                 count=len(listings), duration_ms=int((time.time()-t0)*1000)))
 
-    # Rufus 截图 → LLM 多模态提取
-    rufus_qs = state.get("rufus_questions", [])
-    screenshots = state.get("rufus_screenshots", [])
+    # Alex 截图 → LLM 多模态提取
+    alex_qs = state.get("alex_questions", [])
+    screenshots = state.get("alex_screenshots", [])
     for img_path in screenshots:
         if os.path.exists(img_path):
             t1 = time.time()
-            prompt = toolbox.prompts.render("research", "rufus_extract",
+            prompt = toolbox.prompts.render("research", "alex_extract",
                 {"screenshot_count": str(len(screenshots))})
             result = await toolbox.llm.call("gemini-pro", prompt, attachments=[img_path])
-            rufus_qs.extend(result.get("questions", []))
-            logs.append(MemoryHelper.log_action("research", "extract_rufus",
+            alex_qs.extend(result.get("questions", []))
+            logs.append(MemoryHelper.log_action("research", "extract_alex",
                         duration_ms=int((time.time()-t1)*1000)))
 
     return {
         "competitor_listings": listings,
-        "rufus_questions": rufus_qs,
+        "alex_questions": alex_qs,
         "status": "running",
         "agent_log": logs,
     }
@@ -520,12 +520,12 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
 async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph 节点：融合分析生成属性表。"""
     t0 = time.time()
-    attachments = [p for p in state.get("rufus_screenshots", []) if os.path.exists(p)]
+    attachments = [p for p in state.get("alex_screenshots", []) if os.path.exists(p)]
 
     prompt = toolbox.prompts.render("product_analyst", "info_fusion", {
         "competitor_listings": json.dumps(state["competitor_listings"], ensure_ascii=False),
         "review_summary": json.dumps(state.get("review_summary", {}), ensure_ascii=False),
-        "rufus_questions": json.dumps(state.get("rufus_questions", []), ensure_ascii=False),
+        "alex_questions": json.dumps(state.get("alex_questions", []), ensure_ascii=False),
     })
 
     draft = await toolbox.llm.call("gemini-pro", prompt, attachments=attachments)
@@ -629,16 +629,16 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     logs.append(MemoryHelper.log_action("copywriter", "round_1_draft",
                 model="gemini-pro", duration_ms=int((time.time()-t0)*1000)))
 
-    # Round 2: Rufus 优化
+    # Round 2: Alex 优化
     t0 = time.time()
-    p2 = toolbox.prompts.render("copywriter", "round_2_rufus", {
+    p2 = toolbox.prompts.render("copywriter", "round_2_alex", {
         "draft_v1": json.dumps(v1, ensure_ascii=False),
         "product_attributes": json.dumps(state["approved_product_attributes"], ensure_ascii=False),
-        "rufus_questions": json.dumps(state.get("rufus_questions", []), ensure_ascii=False),
+        "alex_questions": json.dumps(state.get("alex_questions", []), ensure_ascii=False),
     })
-    attachments = [p for p in state.get("rufus_screenshots", []) if os.path.exists(p)]
+    attachments = [p for p in state.get("alex_screenshots", []) if os.path.exists(p)]
     v2 = await toolbox.llm.call("claude-sonnet", p2, attachments=attachments)
-    logs.append(MemoryHelper.log_action("copywriter", "round_2_rufus",
+    logs.append(MemoryHelper.log_action("copywriter", "round_2_alex",
                 model="claude-sonnet", duration_ms=int((time.time()-t0)*1000)))
 
     # Round 3: 合规校正（含重试循环）
@@ -876,9 +876,9 @@ async def upload_data(run_id: str, file: UploadFile = File(...), data_type: str 
         with open(save_path, "wb") as f:
             f.write(content)
         state = app_graph.get_state(config)
-        existing = state.values.get("rufus_screenshots", []) if state else []
+        existing = state.values.get("alex_screenshots", []) if state else []
         existing.append(save_path)
-        await app_graph.aupdate_state(config, {"rufus_screenshots": existing})
+        await app_graph.aupdate_state(config, {"alex_screenshots": existing})
         return {"status": "accepted", "saved": save_path}
     else:
         raise HTTPException(400, "支持 .json / .png / .jpg 文件")
@@ -1015,9 +1015,9 @@ async def main():
             with open(save_path, "wb") as out:
                 out.write(content)
             s = graph.get_state(config)
-            existing = s.values.get("rufus_screenshots", []) if s else []
+            existing = s.values.get("alex_screenshots", []) if s else []
             existing.append(save_path)
-            await graph.aupdate_state(config, {"rufus_screenshots": existing})
+            await graph.aupdate_state(config, {"alex_screenshots": existing})
         else:
             data = json.loads(content)
             await graph.aupdate_state(config, {"competitor_listings": data, "status": "running", "pending_action": {}})
@@ -1050,7 +1050,7 @@ class ComplianceError(EcoListingError): pass
 | Agent | 场景 | 策略 |
 |-------|------|------|
 | Research | 上传数据缺少必要字段 | 返回 `waiting_human`，提示补充 |
-| Research | Rufus 截图 LLM 解析失败 | 跳过（非致命，后续 Round 2 无 Rufus 输入） |
+| Research | Alex 截图 LLM 解析失败 | 跳过（非致命，后续 Round 2 无 Alex 输入） |
 | Product Analyst | LLM 返回非 JSON | 重试 1 次 |
 | Product Analyst | confidence < 0.7 | 用评估反馈重新生成 1 次 |
 | Keyword Strategist | 分类结果某类 < 3 词 | 补充 prompt 重试 1 次 |
@@ -1079,7 +1079,7 @@ tests/
     test_human_interrupt.py       ← 人工卡点暂停/恢复
     test_upload_flow.py           ← 上传竞品 + 关键词 → 恢复
   test_agents/
-    test_research.py              ← 数据校验 + Rufus 解析
+    test_research.py              ← 数据校验 + Alex 解析
     test_product_analyst.py       ← 融合分析 + 自我评估
     test_keyword_strategist.py    ← 分类 + ST 优化
     test_copywriter.py            ← 三轮迭代 + 合规重试

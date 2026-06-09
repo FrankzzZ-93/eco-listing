@@ -45,7 +45,9 @@ async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: fuse competitor data into a structured product attribute table."""
     t0 = time.time()
     attachments = [
-        p for p in state.get("rufus_screenshots", []) if os.path.exists(p)
+        p
+        for p in (state.get("alex_screenshots") or state.get("rufus_screenshots") or [])
+        if os.path.exists(p)
     ]
 
     prompt = toolbox.prompts.render(
@@ -58,8 +60,9 @@ async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
             "review_summary": json.dumps(
                 state.get("review_summary", {}), ensure_ascii=False
             ),
-            "rufus_questions": json.dumps(
-                state.get("rufus_questions", []), ensure_ascii=False
+            "alex_questions": json.dumps(
+                state.get("alex_questions") or state.get("rufus_questions") or [],
+                ensure_ascii=False,
             ),
         },
     )

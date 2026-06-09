@@ -121,11 +121,11 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
       completedKey: 'has_competitor_listings',
       runningDesc: '正在抓取竞品信息…',
       completedDesc: '数据已采集',
-      prompts: [{ agent: 'research', name: 'rufus_extract_v1', label: 'Rufus 问题提取' }],
+      prompts: [{ agent: 'research', name: 'alex_extract_v1', label: 'Alex 问题提取' }],
       dataRefs: [
         { key: 'competitor_listings', label: '竞品 Listing' },
         { key: 'customer_reviews', label: '竞品评论' },
-        { key: 'rufus_questions', label: 'Rufus 问答' },
+        { key: 'alex_questions', label: 'Alex 问答' },
       ],
     },
     {
@@ -174,7 +174,7 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
       runningDesc: '多轮迭代撰写中…',
       prompts: [
         { agent: 'copywriter', name: 'round_1_draft_v2', label: 'R1 初稿' },
-        { agent: 'copywriter', name: 'round_2_rufus_v2', label: 'R2 Rufus 优化' },
+        { agent: 'copywriter', name: 'round_2_alex_v2', label: 'R2 Alex 优化' },
         { agent: 'copywriter', name: 'round_3_compliance_v2', label: 'R3 合规校正' },
       ],
       dataRefs: [{ key: 'final_listing', label: '最终 Listing' }],
@@ -239,12 +239,12 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
 
 function defaultSteps(): PipelineStep[] {
   return [
-    { key: 'research', title: '竞品数据采集', status: 'pending', prompts: [{ agent: 'research', name: 'rufus_extract_v1', label: 'Rufus 问题提取' }], dataRefs: [] },
+    { key: 'research', title: '竞品数据采集', status: 'pending', prompts: [{ agent: 'research', name: 'alex_extract_v1', label: 'Alex 问题提取' }], dataRefs: [] },
     { key: 'product_analyst', title: '产品属性分析', status: 'pending', prompts: [{ agent: 'product_analyst', name: 'info_fusion_v2', label: '信息融合分析' }, { agent: 'product_analyst', name: 'self_eval_v2', label: '自我评估' }], dataRefs: [] },
     { key: 'review', title: '人工审核', status: 'pending', prompts: [], dataRefs: [] },
     { key: 'keyword_review', title: '关键词审核', status: 'pending', prompts: [], dataRefs: [] },
     { key: 'keyword_strategist', title: '关键词分类', status: 'pending', prompts: [{ agent: 'keyword_strategist', name: 'classify_v2', label: '关键词分类' }], dataRefs: [] },
-    { key: 'copywriter', title: 'Listing 文案生成', status: 'pending', prompts: [{ agent: 'copywriter', name: 'round_1_draft_v2', label: 'R1 初稿' }, { agent: 'copywriter', name: 'round_2_rufus_v2', label: 'R2 Rufus 优化' }, { agent: 'copywriter', name: 'round_3_compliance_v2', label: 'R3 合规校正' }], dataRefs: [] },
+    { key: 'copywriter', title: 'Listing 文案生成', status: 'pending', prompts: [{ agent: 'copywriter', name: 'round_1_draft_v2', label: 'R1 初稿' }, { agent: 'copywriter', name: 'round_2_alex_v2', label: 'R2 Alex 优化' }, { agent: 'copywriter', name: 'round_3_compliance_v2', label: 'R3 合规校正' }], dataRefs: [] },
     { key: 'st_optimization', title: 'ST 词频优化', status: 'pending', prompts: [], dataRefs: [] },
   ];
 }

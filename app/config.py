@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # hung subprocesses. Tune via the `CODEX_TIMEOUT` env var.
     codex_timeout: int = 600
     scrape_max_review_pages: int = 3
+    # Max simultaneous competitor scrapes per research phase (listing/Alex/
+    # reviews). Bounds concurrent codex CLI subprocesses to avoid overload /
+    # rate limits. Set to 1 to fall back to fully sequential scraping.
+    research_concurrency: int = 3
 
     # Listing length limits (Amazon-standard, max-only). Seeded into per-run
     # ListingState.length_limits at create time and enforced by the copywriter

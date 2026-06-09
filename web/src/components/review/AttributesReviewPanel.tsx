@@ -330,10 +330,10 @@ export default function AttributesReviewPanel({
             />
           </FieldRow>
 
-          <FieldRow label="Rufus 买家关注点">
+          <FieldRow label="Alex 买家关注点">
             <EditablePairList
-              value={ensureObjArray(basicInfo.rufus_concerns)}
-              onChange={(v) => updateField(['basic_info', 'rufus_concerns'], v)}
+              value={ensureObjArray(basicInfo.alex_concerns ?? basicInfo.rufus_concerns)}
+              onChange={(v) => updateField(['basic_info', 'alex_concerns'], v)}
               field1={{ key: 'question', label: '问题', placeholder: '买家关注问题' }}
               field2={{ key: 'answer', label: '回答', placeholder: '综合回答' }}
             />

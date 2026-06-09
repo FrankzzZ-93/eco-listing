@@ -1,7 +1,7 @@
 {
   "templates": {
     "round_1_draft":      { "active": "v2", "model": "gemini-pro" },
-    "round_2_rufus":      { "active": "v2", "model": "claude-sonnet" },
+    "round_2_alex":       { "active": "v2", "model": "claude-sonnet" },
     "round_3_compliance": { "active": "v2", "model": "claude-sonnet" }
   }
 }

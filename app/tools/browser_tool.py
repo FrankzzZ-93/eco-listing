@@ -17,7 +17,7 @@ class BrowserTool:
     Strategy:
       Layer 1 — Playwright: fast, precise, low-cost structured scraping.
       Layer 2 — Codex CLI: LLM-driven browser for anti-scraping fallback
-               and complex interactions (Rufus Q&A expansion, dynamic content).
+               and complex interactions (Alex Q&A expansion, dynamic content).
     """
 
     def __init__(self):
@@ -75,27 +75,28 @@ class BrowserTool:
             logger.warning("Playwright error for reviews (%s), falling back to Codex", e)
             return await self._codex_scrape_reviews(asin, site)
 
-    async def scrape_rufus(self, asin: str, site: str) -> dict[str, Any]:
-        """Get Rufus Q&A content. Always uses Codex CLI (requires interaction)."""
-        logger.info("Scraping Rufus Q&A via Codex CLI: %s/%s", site, asin)
+    async def scrape_alex(self, asin: str, site: str) -> dict[str, Any]:
+        """Get Alex Q&A content. Always uses Codex CLI (requires interaction)."""
+        logger.info("Scraping Alex Q&A via Codex CLI: %s/%s", site, asin)
         url = f"https://{site}/dp/{asin}"
 
         try:
             return await self.codex.interact_and_extract(
                 url=url,
                 steps=[
-                    "Look for the 'Customers say' or 'AI-generated from the text of customer reviews' section",
+                    "Look for the Amazon 'Alex' AI shopping assistant Q&A section "
+                    "(also shown as 'Customers say' or 'AI-generated from the text of customer reviews')",
                     "If there is a 'Show more' or expand button, click it to reveal all Q&A content",
                     "Wait for the expanded content to fully load",
                 ],
                 extract_instruction=(
-                    "Extract all Rufus Q&A pairs. For each entry, capture the question/topic "
+                    "Extract all Alex Q&A pairs. For each entry, capture the question/topic "
                     "and the corresponding answer/summary. Return as JSON with key 'qa_pairs' "
                     "containing a list of objects with 'question' and 'answer' fields."
                 ),
             )
         except CodexToolError as e:
-            logger.error("Codex failed to scrape Rufus: %s", e)
+            logger.error("Codex failed to scrape Alex: %s", e)
             return {"qa_pairs": [], "error": str(e)}
 
     async def _codex_scrape_listing(self, asin: str, site: str) -> dict[str, Any]:

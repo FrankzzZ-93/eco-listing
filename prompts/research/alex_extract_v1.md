@@ -1,4 +1,4 @@
-You are an Amazon product research analyst. You are given {{ screenshot_count }} screenshot(s) of the Amazon Rufus Q&A section for a product listing.
+You are an Amazon product research analyst. You are given {{ screenshot_count }} screenshot(s) of the Amazon Alex AI shopping assistant Q&A section for a product listing.
 
 ## Task
 

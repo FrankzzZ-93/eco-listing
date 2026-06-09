@@ -7,7 +7,6 @@ from typing import Annotated, TypedDict
 class ListingState(TypedDict):
     # --- 输入 ---
     run_id: str
-    product_asin: str
     site: str
     competitor_asins: list[str]
 
@@ -15,8 +14,8 @@ class ListingState(TypedDict):
     competitor_listings: list[dict]
     customer_reviews: list[dict]
     review_summary: dict
-    rufus_questions: list[str]
-    rufus_screenshots: list[str]
+    alex_questions: list[str]
+    alex_screenshots: list[str]
     product_attributes_draft: dict
     product_attributes_confidence: float
     product_attributes_notes: str

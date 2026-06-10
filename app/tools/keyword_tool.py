@@ -205,11 +205,16 @@ class KeywordTool:
 
         unique_candidate_words = len(order)
 
-        # Filter: already-indexed words, stopwords, ASIN tokens, noise.
+        # Filter: already-indexed words, stopwords, ASIN tokens, noise, and
+        # single-character fragments. The tokenizer splits phrases on non-
+        # alphanumerics, so contractions/hyphenations leak stray 1-char tokens
+        # ("women's" -> "women","s"; "t-shirt" -> "t","shirt"). Single letters/
+        # digits carry zero search value and must never reach Search Terms.
         candidates = [
             w
             for w in order
-            if w not in used_words
+            if len(w) >= 2
+            and w not in used_words
             and w not in _STOPWORDS
             and not ASIN_RE.match(w)
         ]

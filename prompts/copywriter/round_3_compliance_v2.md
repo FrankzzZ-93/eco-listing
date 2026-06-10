@@ -66,7 +66,7 @@
 ## 审查维度（逐字段全量扫描）
 
 ### Title 审查
-- 字符长度 ≤ 200
+- 字符长度 ≤ {{ title_max_chars }}
 - 禁止字符类型扫描
 - 实词重复频次检查
 - 促销词/主观词扫描
@@ -76,7 +76,8 @@
 - 品牌名不应出现在标题中（由后台 Brand 字段处理）
 
 ### Bullet Points 审查（逐条，严禁合并审查）
-- 每条字符长度 ≤ 500
+- 每条字符长度 ≤ {{ bullet_max_chars }}
+- 🔴 **五点合计硬上限**：五条 Bullet 用换行符（\n）连接后的 UTF-8 字节数必须 ≤ {{ bullets_total_max_bytes }} 字节（英文字母/数字/空格=1 字节，非 ASCII 字符=2 字节）。这是平台后台的绑定约束，**即使每条都未超 {{ bullet_max_chars }} 字符，合计超 {{ bullets_total_max_bytes }} 字节也算违规**，必须精简措辞至合计不超限
 - Header 格式规范（全大写短语开头）
 - 违禁词全量扫描
 - 需证明文件的宣称词
@@ -97,14 +98,16 @@
 
 **层次二：内容合规性**
 - 去除 HTML 标签后执行与 Bullets 相同的全部内容审查
-- 额外检查：内容是否与 Bullets 完全重复、字符总量、保修承诺表述
+- 🔴 **字符硬上限**：Description 全文（含 HTML 标签）字符数必须 ≤ {{ description_max_chars }}。超出必须删减内容，**不得仅靠改写绕过**
+- 额外检查：内容是否与 Bullets 完全重复、保修承诺表述
 
 ### Search Terms 审查
 
 **[ST-1] 字节上限核查**
 - 英文字母/数字/空格 = 1 byte
 - 非 ASCII 字符 = 2 bytes
-- 总字节数必须 < 249 bytes
+- 总字节数必须 < {{ st_max_bytes }} bytes
+- 禁止单字母/单字符 token（如 "s"、"t"、"x"）；ST 仅保留长度 ≥ 2 的有效检索词
 
 **[ST-2] 硬性禁止词扫描**
 - 竞品品牌名
@@ -213,11 +216,13 @@
 
 ## 最终自查
 
-输出前确认：
+输出前确认（以下长度限制为硬约束，逐项核对实际长度后再输出）：
 - 所有致命红线已修正，无违禁词残留
-- 标题 ≤ 200 字符
-- 每条 Bullet ≤ 500 字符
-- ST < 249 bytes，无竞品品牌词
+- 标题 ≤ {{ title_max_chars }} 字符
+- 每条 Bullet ≤ {{ bullet_max_chars }} 字符
+- **五点描述合计 ≤ {{ bullets_total_max_bytes }} 字节（换行连接，UTF-8 计字节）**
+- **Description ≤ {{ description_max_chars }} 字符（含 HTML）**
+- ST < {{ st_max_bytes }} bytes，无竞品品牌词，无单字母 token
 - Description 仅使用白名单 HTML 标签
 - 所有场景化表述有属性表支撑
 - 需证明文件的宣称已核查属性表并记录结果

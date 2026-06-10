@@ -80,13 +80,30 @@ export default function RunDashboard() {
     navigate(`/run/${runId}/${key}`, { replace: true });
   };
 
+  const reportActionError = (action: string, e: unknown) => {
+    const err = e as { response?: { status?: number; data?: { detail?: string } } };
+    const status = err?.response?.status;
+    const detail = err?.response?.data?.detail;
+    if (status === 404) {
+      message.error(`${action}失败：该任务在后端已不存在（页面可能已过期），正在刷新…`);
+      refresh();
+      return;
+    }
+    if (detail) {
+      message.error(`${action}失败：${detail}`);
+      refresh();
+      return;
+    }
+    message.error(`${action}失败：无法连接后端服务，请确认服务已启动`);
+  };
+
   const handlePause = async () => {
     setActionLoading(true);
     try {
       await pauseRun(runId!);
       message.success('任务已暂停');
-    } catch {
-      message.error('暂停失败');
+    } catch (e) {
+      reportActionError('暂停', e);
     } finally {
       setActionLoading(false);
     }
@@ -97,8 +114,8 @@ export default function RunDashboard() {
     try {
       await resumeRun(runId!);
       message.success('任务已恢复');
-    } catch {
-      message.error('恢复失败');
+    } catch (e) {
+      reportActionError('恢复', e);
     } finally {
       setActionLoading(false);
     }
@@ -116,8 +133,9 @@ export default function RunDashboard() {
         try {
           await stopRun(runId!);
           message.success('任务已停止');
-        } catch {
-          message.error('停止失败');
+          refresh();
+        } catch (e) {
+          reportActionError('停止', e);
         } finally {
           setActionLoading(false);
         }

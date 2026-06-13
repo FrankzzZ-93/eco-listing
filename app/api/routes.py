@@ -19,6 +19,15 @@ router = APIRouter(prefix="/api")
 
 PROMPTS_DIR = "prompts"
 
+# Graph nodes whose `interrupt_before` makes the run pause for human input.
+# Keep in sync with create_app_graph(...).interrupt_before in orchestrator.py.
+_WAITING_NODES = (
+    "wait_upload",
+    "human_review",
+    "keyword_upload",
+    "keyword_classify_review",
+)
+
 # Per-run lock serializing graph-state read-modify-write operations. Without
 # it, concurrent uploads (e.g. several files posted in parallel) each read the
 # same checkpoint and write back, so the last writer clobbers the others'
@@ -146,7 +155,7 @@ async def list_runs():
                 next_nodes = state.next if state.next else ()
                 if next_nodes and any(
                     n in next_nodes
-                    for n in ("wait_upload", "human_review", "keyword_upload", "keyword_review")
+                    for n in _WAITING_NODES
                 ):
                     status = "waiting_human"
 
@@ -197,7 +206,7 @@ async def get_run(run_id: str):
     snapshot = state.values
     next_nodes = state.next if state.next else ()
 
-    if next_nodes and any(n in next_nodes for n in ("wait_upload", "human_review", "keyword_upload", "keyword_review")):
+    if next_nodes and any(n in next_nodes for n in _WAITING_NODES):
         effective_status = "waiting_human"
         pending = _pending_action_for(next_nodes)
     else:
@@ -228,7 +237,7 @@ async def get_run(run_id: str):
         for key in mem_keys
     }
     has_kw = mem_snapshot.get("has_keyword_library", False)
-    nodes_after_review = {"keyword_classify", "copywriter", "st_optimize", "export"}
+    nodes_after_review = {"keyword_classify", "keyword_classify_review", "copywriter", "st_optimize", "export"}
     past_review = (
         MemoryHelper.has(snapshot, "classified_keywords")
         or (bool(next_nodes) and any(n in next_nodes for n in nodes_after_review))
@@ -299,10 +308,10 @@ def _pending_action_for(next_nodes) -> dict:
         return {"type": "upload_competitor_data", "message": "请上传竞品 Listing JSON"}
     if "human_review" in next_nodes:
         return {"type": "review_product_attributes", "message": "请审核产品属性"}
-    if "keyword_review" in next_nodes:
-        return {"type": "review_keywords", "message": "请审核关键词词库"}
     if "keyword_upload" in next_nodes:
         return {"type": "upload_keywords", "message": "请上传关键词词库"}
+    if "keyword_classify_review" in next_nodes:
+        return {"type": "review_classified_keywords", "message": "请审核关键词分类结果"}
     return {}
 
 
@@ -317,45 +326,51 @@ async def submit_review(run_id: str, req: SubmitReviewRequest):
         "status": "running",
         "pending_action": {},
     }
+    # Keep the draft in sync with the approved edits so that re-opening the
+    # review tab (which loads product_attributes_draft) shows the user's edits
+    # instead of the stale AI/uploaded draft. Skip on reject (empty approved_data
+    # + feedback) so the draft isn't wiped.
+    if req.approved_data:
+        update["product_attributes_draft"] = req.approved_data
     await graph.aupdate_state(config, update)
     task = asyncio.create_task(_resume_graph(run_id))
     set_run_task(run_id, task)
     return {"status": "accepted"}
 
 
-class SubmitKeywordReviewRequest(BaseModel):
-    approved_keywords: list[dict]
+class SubmitClassifiedReviewRequest(BaseModel):
+    classified_keywords: dict
+    # True  -> save + approve: persist and resume into copywriter.
+    # False -> save only: persist edits but stay paused at the review gate.
+    approve: bool = True
 
 
-@router.put("/runs/{run_id}/keyword-review")
-async def submit_keyword_review(run_id: str, req: SubmitKeywordReviewRequest):
-    """Save reviewed keyword library and resume the graph."""
+@router.put("/runs/{run_id}/classified-review")
+async def submit_classified_review(run_id: str, req: SubmitClassifiedReviewRequest):
+    """Save the human-reviewed keyword classification.
+
+    On approve, also resume the graph so it proceeds to the copywriter; on a
+    plain save, only persist the edits and keep the run paused at the
+    keyword_classify_review interrupt so the user can keep editing.
+    """
     from app.api._state import set_run_task
 
     graph = _get_graph()
     config = {"configurable": {"thread_id": run_id}}
+
+    if not req.approve:
+        await graph.aupdate_state(config, {"classified_keywords": req.classified_keywords})
+        return {"status": "saved"}
+
     update = {
-        "keyword_library": req.approved_keywords,
+        "classified_keywords": req.classified_keywords,
         "status": "running",
         "pending_action": {},
     }
     await graph.aupdate_state(config, update)
     task = asyncio.create_task(_resume_graph(run_id))
     set_run_task(run_id, task)
-    return {"status": "accepted", "keyword_count": len(req.approved_keywords)}
-
-
-@router.post("/runs/{run_id}/reset-to-keyword-review")
-async def reset_to_keyword_review(run_id: str):
-    """Force a run back to the keyword_review interrupt point."""
-    graph = _get_graph()
-    config = {"configurable": {"thread_id": run_id}}
-    await graph.aupdate_state(config, {
-        "status": "running",
-        "pending_action": {},
-    }, as_node="keyword_upload")
-    state = await graph.aget_state(config)
-    return {"status": "ok", "next": list(state.next) if state.next else []}
+    return {"status": "accepted"}
 
 
 @router.post("/runs/{run_id}/pause")
@@ -787,7 +802,11 @@ def _get_toolbox():
 
 
 async def _auto_resume_after_keyword(run_id: str):
-    """Resume graph after keyword upload so it reaches the keyword_review interrupt."""
+    """Resume the graph after a keyword upload.
+
+    With the keyword review gate removed, the run proceeds through
+    keyword_classify and pauses at the keyword_classify_review interrupt.
+    """
     from app.api._state import set_run_task
 
     task = asyncio.create_task(_resume_graph(run_id))

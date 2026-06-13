@@ -76,7 +76,7 @@ async def _recover_stale_runs(graph):
 
             status = state.values.get("status", "")
             next_nodes = state.next if state.next else ()
-            waiting_nodes = {"wait_upload", "human_review", "keyword_upload", "keyword_review"}
+            waiting_nodes = {"wait_upload", "human_review", "keyword_upload", "keyword_classify_review"}
 
             if status in terminal_statuses:
                 continue

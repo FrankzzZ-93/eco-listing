@@ -44,6 +44,29 @@ def _strip_asins(obj):
 async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: fuse competitor data into a structured product attribute table."""
     t0 = time.time()
+
+    # Defensive guard: if a ready-made 本品属性表 was uploaded (or a draft was
+    # already produced), never overwrite it with a competitor-fused regeneration.
+    # The orchestrator routing normally skips this node when a draft exists, but
+    # this keeps the node idempotent against routing edge cases / re-entry so an
+    # uploaded table is always honored.
+    existing_draft = state.get("product_attributes_draft")
+    if MemoryHelper.has(state, "product_attributes_draft"):
+        return {
+            "status": "waiting_human",
+            "pending_action": {
+                "type": "review_product_attributes",
+                "data": existing_draft,
+            },
+            "agent_log": [
+                MemoryHelper.log_action(
+                    "product_analyst",
+                    "skip_generate_attributes",
+                    reason="本品属性表已存在，跳过竞品生成",
+                )
+            ],
+        }
+
     attachments = [
         p
         for p in (state.get("alex_screenshots") or state.get("rufus_screenshots") or [])

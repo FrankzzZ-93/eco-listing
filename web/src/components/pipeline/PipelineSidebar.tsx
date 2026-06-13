@@ -151,13 +151,13 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
     },
     {
       key: 'keyword_review',
-      title: '关键词审核',
+      title: '关键词词库',
       completedKey: 'has_keywords_reviewed',
       runningDesc: '',
       prompts: [],
       dataRefs: [{ key: 'keyword_library', label: '关键词词库' }],
-      overrideStatus: pending_action?.type === 'review_keywords' ? 'waiting' : undefined,
-      overrideDesc: pending_action?.type === 'review_keywords' ? '请审核关键词词库' : undefined,
+      overrideStatus: pending_action?.type === 'upload_keywords' ? 'waiting' : undefined,
+      overrideDesc: pending_action?.type === 'upload_keywords' ? '请上传关键词词库' : undefined,
     },
     {
       key: 'keyword_strategist',
@@ -166,6 +166,8 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
       runningDesc: '正在分类关键词…',
       prompts: [{ agent: 'keyword_strategist', name: 'classify_v2', label: '关键词分类' }],
       dataRefs: [{ key: 'classified_keywords', label: '分类关键词' }],
+      overrideStatus: pending_action?.type === 'review_classified_keywords' ? 'waiting' : undefined,
+      overrideDesc: pending_action?.type === 'review_classified_keywords' ? '请审核关键词分类结果' : undefined,
     },
     {
       key: 'copywriter',
@@ -194,7 +196,10 @@ function computeSteps(run: RunDetail | undefined): PipelineStep[] {
   const steps: PipelineStep[] = defs.map((def) => {
     const completed = !!(mem as unknown as Record<string, boolean> | undefined)?.[def.completedKey];
 
-    if (def.overrideStatus && !completed) {
+    // A 'waiting' override means the run is paused on a human gate for this
+    // step right now; it takes precedence even if the underlying data already
+    // exists (e.g. classified_keywords is produced before its review gate).
+    if (def.overrideStatus) {
       foundRunning = true;
       return {
         key: def.key, title: def.title, prompts: def.prompts, dataRefs: def.dataRefs,
@@ -242,7 +247,7 @@ function defaultSteps(): PipelineStep[] {
     { key: 'research', title: '竞品数据采集', status: 'pending', prompts: [{ agent: 'research', name: 'alex_extract_v1', label: 'Alex 问题提取' }], dataRefs: [] },
     { key: 'product_analyst', title: '产品属性分析', status: 'pending', prompts: [{ agent: 'product_analyst', name: 'info_fusion_v2', label: '信息融合分析' }, { agent: 'product_analyst', name: 'self_eval_v2', label: '自我评估' }], dataRefs: [] },
     { key: 'review', title: '人工审核', status: 'pending', prompts: [], dataRefs: [] },
-    { key: 'keyword_review', title: '关键词审核', status: 'pending', prompts: [], dataRefs: [] },
+    { key: 'keyword_review', title: '关键词词库', status: 'pending', prompts: [], dataRefs: [] },
     { key: 'keyword_strategist', title: '关键词分类', status: 'pending', prompts: [{ agent: 'keyword_strategist', name: 'classify_v2', label: '关键词分类' }], dataRefs: [] },
     { key: 'copywriter', title: 'Listing 文案生成', status: 'pending', prompts: [{ agent: 'copywriter', name: 'round_1_draft_v2', label: 'R1 初稿' }, { agent: 'copywriter', name: 'round_2_alex_v2', label: 'R2 Alex 优化' }, { agent: 'copywriter', name: 'round_3_compliance_v2', label: 'R3 合规校正' }], dataRefs: [] },
     { key: 'st_optimization', title: 'ST 词频优化', status: 'pending', prompts: [], dataRefs: [] },

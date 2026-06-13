@@ -1,5 +1,7 @@
-import { Input, Button, Space } from 'antd';
+import { Input, Button } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+
+const { TextArea } = Input;
 
 interface Props {
   value: string[];
@@ -21,12 +23,13 @@ export default function EditableStringList({ value, onChange, placeholder }: Pro
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {value.map((item, i) => (
-        <Space key={i} style={{ width: '100%' }} align="start">
-          <Input
+        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 4, width: '100%' }}>
+          <TextArea
             value={item}
             onChange={(e) => handleChange(i, e.target.value)}
             placeholder={placeholder}
-            style={{ width: 480 }}
+            autoSize={{ minRows: 1, maxRows: 6 }}
+            style={{ flex: 1 }}
           />
           <Button
             type="text"
@@ -35,7 +38,7 @@ export default function EditableStringList({ value, onChange, placeholder }: Pro
             icon={<DeleteOutlined />}
             onClick={() => handleRemove(i)}
           />
-        </Space>
+        </div>
       ))}
       <Button
         type="dashed"

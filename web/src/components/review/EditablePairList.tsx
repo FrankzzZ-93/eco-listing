@@ -1,5 +1,7 @@
-import { Input, Button, Space } from 'antd';
+import { Input, Button } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+
+const { TextArea } = Input;
 
 interface Props {
   value: Record<string, string>[];
@@ -25,24 +27,26 @@ export default function EditablePairList({ value, onChange, field1, field2 }: Pr
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {value.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, paddingLeft: 0 }}>
-          <span style={{ width: 280, fontSize: 12, color: '#8c8c8c' }}>{field1.label}</span>
-          <span style={{ width: 280, fontSize: 12, color: '#8c8c8c' }}>{field2.label}</span>
+        <div style={{ display: 'flex', gap: 8, paddingLeft: 0, paddingRight: 32 }}>
+          <span style={{ flex: 1, fontSize: 12, color: '#8c8c8c' }}>{field1.label}</span>
+          <span style={{ flex: 1, fontSize: 12, color: '#8c8c8c' }}>{field2.label}</span>
         </div>
       )}
       {value.map((item, i) => (
-        <Space key={i} align="start">
-          <Input
+        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+          <TextArea
             value={item[field1.key] ?? ''}
             onChange={(e) => handleChange(i, field1.key, e.target.value)}
             placeholder={field1.placeholder}
-            style={{ width: 280 }}
+            autoSize={{ minRows: 1, maxRows: 6 }}
+            style={{ flex: 1 }}
           />
-          <Input
+          <TextArea
             value={item[field2.key] ?? ''}
             onChange={(e) => handleChange(i, field2.key, e.target.value)}
             placeholder={field2.placeholder}
-            style={{ width: 280 }}
+            autoSize={{ minRows: 1, maxRows: 6 }}
+            style={{ flex: 1 }}
           />
           <Button
             type="text"
@@ -51,7 +55,7 @@ export default function EditablePairList({ value, onChange, field1, field2 }: Pr
             icon={<DeleteOutlined />}
             onClick={() => handleRemove(i)}
           />
-        </Space>
+        </div>
       ))}
       <Button
         type="dashed"

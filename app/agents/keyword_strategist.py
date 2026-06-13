@@ -6,6 +6,48 @@ from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
 
 
+# Top-level keys in the classify output that are not keyword buckets.
+_CLASSIFY_META_KEYS = frozenset({"semantic_map", "summary"})
+# Source-library fields surfaced as reference columns during review.
+_SOURCE_FIELDS = ("translation", "bid_price", "conversion_rate", "search_volume", "competition")
+
+
+def _backfill_source_fields(classified: dict, keyword_library: list) -> None:
+    """Merge source-library reference fields into each classified entry in-place.
+
+    The LLM only emits keyword/rationale/usage (and sometimes a metric), so we
+    re-attach translation / CPC / conversion-rate / search-volume from the
+    original keyword library (matched on lowercased keyword text). These are
+    review-time reference columns; the source library is authoritative.
+    """
+    if not isinstance(classified, dict):
+        return
+    lookup: dict[str, dict] = {}
+    for item in keyword_library or []:
+        if isinstance(item, dict):
+            kw = str(item.get("keyword", "")).strip().lower()
+            if kw:
+                lookup[kw] = item
+
+    for cat, entries in classified.items():
+        if cat in _CLASSIFY_META_KEYS or not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            src = lookup.get(str(entry.get("keyword", "")).strip().lower())
+            if not src:
+                continue
+            for field in _SOURCE_FIELDS:
+                src_val = src.get(field)
+                if src_val in (None, ""):
+                    continue
+                # Source library is authoritative for reference metrics; overwrite
+                # any value the LLM may have echoed/drifted (keyword/rationale/
+                # usage are NOT in _SOURCE_FIELDS, so they are never touched).
+                entry[field] = src_val
+
+
 async def keyword_classify_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: classify keywords into semantic categories using LLM."""
     t0 = time.time()
@@ -37,6 +79,8 @@ async def keyword_classify_node(state: ListingState, toolbox: ToolBox) -> dict:
             )
             classified = await toolbox.llm.call("claude-sonnet", prompt_retry)
             break
+
+    _backfill_source_fields(classified, state.get("keyword_library", []))
 
     return {
         "classified_keywords": classified,

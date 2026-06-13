@@ -29,7 +29,7 @@ export interface MemorySnapshot {
 }
 
 export interface PendingAction {
-  type: 'review_product_attributes' | 'review_keywords' | 'review_listing_draft';
+  type: 'review_product_attributes' | 'upload_keywords' | 'review_classified_keywords' | 'review_listing_draft';
   data?: Record<string, unknown>;
   message?: string;
   agent_notes?: string;

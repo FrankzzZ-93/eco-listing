@@ -13,7 +13,7 @@ import {
   Col,
   message,
 } from 'antd';
-import { EditOutlined, CodeOutlined } from '@ant-design/icons';
+import { CodeOutlined } from '@ant-design/icons';
 import EditableStringList from './EditableStringList';
 import EditablePairList from './EditablePairList';
 import FullMarkdownEditor from './FullMarkdownEditor';
@@ -124,6 +124,12 @@ export default function AttributesReviewPanel({
   const [feedback, setFeedback] = useState('');
   const [jsonEditorOpen, setJsonEditorOpen] = useState(false);
 
+  const hasApproved = memorySnapshot?.has_approved_product_attributes;
+  // After the review has been submitted the run advances; the panel becomes a
+  // read-only view. Load the approved (edited) attributes so the user sees the
+  // content they submitted instead of the stale pre-edit draft.
+  const readOnly = !isPending;
+
   useEffect(() => {
     if (isPending && pendingAction?.data && Object.keys(pendingAction.data).length > 0) {
       setData(buildInitialData(pendingAction.data));
@@ -131,12 +137,15 @@ export default function AttributesReviewPanel({
     }
     if (isPending || hasData) {
       setLoading(true);
-      getRunData(runId, 'product_attributes_draft')
+      const sourceKey = !isPending && hasApproved
+        ? 'approved_product_attributes'
+        : 'product_attributes_draft';
+      getRunData(runId, sourceKey)
         .then((res) => setData(buildInitialData(res.data)))
         .catch(() => message.error('加载属性表失败'))
         .finally(() => setLoading(false));
     }
-  }, [isPending, hasData, runId, pendingAction?.data]);
+  }, [isPending, hasData, hasApproved, runId, pendingAction?.data]);
 
   const updateField = useCallback((path: string[], value: unknown) => {
     setData((prev) => {
@@ -416,10 +425,21 @@ export default function AttributesReviewPanel({
         <Text strong style={{ fontSize: 16 }}>
           {isPending ? '产品属性表审核' : '产品属性表'}
         </Text>
-        <Button icon={<CodeOutlined />} size="small" onClick={() => setJsonEditorOpen(true)}>
-          JSON 编辑
-        </Button>
+        {!readOnly && (
+          <Button icon={<CodeOutlined />} size="small" onClick={() => setJsonEditorOpen(true)}>
+            JSON 编辑
+          </Button>
+        )}
       </div>
+
+      {readOnly && (
+        <Alert
+          message="本次审核已提交，流程已继续，属性表当前为只读视图。"
+          type="success"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       {isPending && pendingAction?.agent_notes && (
         <Alert
@@ -431,11 +451,13 @@ export default function AttributesReviewPanel({
         />
       )}
 
-      <Collapse
-        defaultActiveKey={['basic_info', 'market_analysis', 'copywriting_ref']}
-        items={collapseItems}
-        style={{ background: 'transparent' }}
-      />
+      <div style={readOnly ? { pointerEvents: 'none', opacity: 0.9 } : undefined}>
+        <Collapse
+          defaultActiveKey={['basic_info', 'market_analysis', 'copywriting_ref']}
+          items={collapseItems}
+          style={{ background: 'transparent' }}
+        />
+      </div>
 
       <Divider style={{ margin: '16px 0' }} />
 
@@ -462,17 +484,17 @@ export default function AttributesReviewPanel({
           </Space>
         )
       ) : (
-        <Button type="primary" icon={<EditOutlined />} loading={submitLoading} onClick={handleApprove}>
-          保存修改
-        </Button>
+        <Text type="secondary">流程已进入下一阶段，属性表不可再修改。</Text>
       )}
 
-      <FullMarkdownEditor
-        open={jsonEditorOpen}
-        content={JSON.stringify(data, null, 2)}
-        onSave={handleJsonSave}
-        onClose={() => setJsonEditorOpen(false)}
-      />
+      {!readOnly && (
+        <FullMarkdownEditor
+          open={jsonEditorOpen}
+          content={JSON.stringify(data, null, 2)}
+          onSave={handleJsonSave}
+          onClose={() => setJsonEditorOpen(false)}
+        />
+      )}
     </Card>
   );
 }

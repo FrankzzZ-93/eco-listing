@@ -42,11 +42,15 @@ export async function startRun(runId: string): Promise<void> {
   await client.post(`/runs/${runId}/start`);
 }
 
-export async function submitKeywordReview(
+export async function submitClassifiedReview(
   runId: string,
-  approvedKeywords: Record<string, unknown>[],
+  classifiedKeywords: Record<string, unknown>,
+  approve = true,
 ): Promise<void> {
-  await client.put(`/runs/${runId}/keyword-review`, { approved_keywords: approvedKeywords });
+  await client.put(`/runs/${runId}/classified-review`, {
+    classified_keywords: classifiedKeywords,
+    approve,
+  });
 }
 
 export async function pauseRun(runId: string): Promise<void> {

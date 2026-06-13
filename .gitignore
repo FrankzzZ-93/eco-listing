@@ -18,6 +18,7 @@ node_modules/
 web/dist/
 dist/
 *.log
+*.tsbuildinfo
 
 # --- Runtime data / generated artifacts ---
 artifacts/

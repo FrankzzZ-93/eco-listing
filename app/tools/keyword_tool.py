@@ -55,6 +55,42 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
         val = row[idx]
         return default if val is None else val
 
+    # Optional source-library columns (西柚 export). Matched by substring so
+    # minor header variations (e.g. "CPC建议竞价($)" vs "CPC竞价") still resolve.
+    # These ride along into the keyword library purely as review-time reference
+    # data (translation / CPC / click-through conversion rate).
+    def _find_col(*needles: str) -> int | None:
+        for idx, name in enumerate(header):
+            if any(n in name for n in needles):
+                return idx
+        return None
+
+    translation_idx = _find_col("翻译")
+    cpc_idx = _find_col("CPC", "建议竞价", "建议出价")
+    conv_idx = _find_col("转化率")
+
+    def _opt(row: tuple, idx: int | None, default=""):
+        if idx is None or idx >= len(row):
+            return default
+        val = row[idx]
+        return default if val is None else val
+
+    def _num(val) -> float:
+        try:
+            return float(str(val).replace("$", "").replace("%", "").strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _source_extras(row: tuple) -> dict:
+        extras: dict = {}
+        if translation_idx is not None:
+            extras["translation"] = str(_opt(row, translation_idx, "")).strip()
+        if cpc_idx is not None:
+            extras["bid_price"] = _num(_opt(row, cpc_idx, 0))
+        if conv_idx is not None:
+            extras["conversion_rate"] = _num(_opt(row, conv_idx, 0))
+        return extras
+
     results: list[dict] = []
     first_col = header[0] if header else ""
 
@@ -75,6 +111,7 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
                 "keyword": kw,
                 "search_volume": sv,
                 "competition": str(_get(row, comp_col, "")),
+                **_source_extras(row),
             })
     elif first_col == "流量关键词":
         for row in rows[1:]:
@@ -101,6 +138,7 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
                 "keyword": kw,
                 "search_volume": sv,
                 "competition": comp,
+                **_source_extras(row),
             })
     else:
         for row in rows[1:]:
@@ -115,7 +153,12 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
                     except (ValueError, TypeError):
                         pass
                     break
-            results.append({"keyword": kw, "search_volume": sv, "competition": ""})
+            results.append({
+                "keyword": kw,
+                "search_volume": sv,
+                "competition": "",
+                **_source_extras(row),
+            })
 
     return results
 
@@ -135,13 +178,17 @@ class KeywordTool:
                 # 鸥鹭/西柚 export) so they never reach classification or ST.
                 continue
             seen.add(kw)
-            cleaned.append(
-                {
-                    "keyword": kw,
-                    "search_volume": int(row.get("search_volume", 0)),
-                    "competition": row.get("competition", ""),
-                }
-            )
+            entry = {
+                "keyword": kw,
+                "search_volume": int(row.get("search_volume", 0)),
+                "competition": row.get("competition", ""),
+            }
+            # Preserve optional source-library reference fields when present so
+            # they can be surfaced during keyword-classification review.
+            for opt_key in ("translation", "bid_price", "conversion_rate"):
+                if opt_key in row and row.get(opt_key) not in (None, ""):
+                    entry[opt_key] = row[opt_key]
+            cleaned.append(entry)
         cleaned.sort(key=lambda x: x["search_volume"], reverse=True)
         return cleaned
 

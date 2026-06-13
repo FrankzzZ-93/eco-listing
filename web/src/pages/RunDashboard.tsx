@@ -9,6 +9,7 @@ import LiveCodexBanner from '../components/status/LiveCodexBanner';
 import ResearchProgressBanner from '../components/status/ResearchProgressBanner';
 import AttributesReviewPanel from '../components/review/AttributesReviewPanel';
 import KeywordReviewPanel from '../components/review/KeywordReviewPanel';
+import ClassifiedKeywordsReviewPanel from '../components/review/ClassifiedKeywordsReviewPanel';
 import ListingPreview from '../components/output/ListingPreview';
 import { useRunStatus } from '../hooks/useRunStatus';
 import { getFinal, pauseRun, resumeRun, stopRun } from '../api/runs';
@@ -39,8 +40,10 @@ export default function RunDashboard() {
   useEffect(() => {
     if (run?.status === 'waiting_human') {
       const pt = run.pending_action?.type;
-      if (pt === 'review_keywords') {
+      if (pt === 'upload_keywords') {
         setActiveTab('keyword-review');
+      } else if (pt === 'review_classified_keywords') {
+        setActiveTab('classified-review');
       } else if (pt === 'review_product_attributes') {
         setActiveTab('attr-review');
       }
@@ -348,7 +351,7 @@ export default function RunDashboard() {
                 },
                 {
                   key: 'keyword-review',
-                  label: '关键词审核',
+                  label: '关键词词库',
                   children: (
                     <KeywordReviewPanel
                       runId={runId!}
@@ -356,6 +359,18 @@ export default function RunDashboard() {
                       memorySnapshot={run?.memory_snapshot}
                       onReviewComplete={handleReviewComplete}
                       onUploaded={refresh}
+                    />
+                  ),
+                },
+                {
+                  key: 'classified-review',
+                  label: '分类审核',
+                  children: (
+                    <ClassifiedKeywordsReviewPanel
+                      runId={runId!}
+                      pendingAction={run?.pending_action ?? null}
+                      memorySnapshot={run?.memory_snapshot}
+                      onReviewComplete={handleReviewComplete}
                     />
                   ),
                 },

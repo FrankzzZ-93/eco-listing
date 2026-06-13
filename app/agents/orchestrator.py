@@ -25,8 +25,8 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
     graph.add_node("product_analyst", _bind(product_analyst_node, toolbox))
     graph.add_node("human_review", _human_review_passthrough)
     graph.add_node("keyword_upload", _passthrough)
-    graph.add_node("keyword_review", _passthrough)
     graph.add_node("keyword_classify", _bind(keyword_classify_node, toolbox))
+    graph.add_node("keyword_classify_review", _passthrough)
     graph.add_node("copywriter", _bind(copywriter_node, toolbox))
     graph.add_node("st_optimize", _bind(st_optimize_node, toolbox))
     graph.add_node("export", _bind(_export_node, toolbox))
@@ -54,12 +54,12 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
     graph.add_conditional_edges(
         "human_review",
         _after_human_review,
-        {"wait_keyword": "keyword_upload", "keyword_review": "keyword_review"},
+        {"wait_keyword": "keyword_upload", "keyword_classify": "keyword_classify"},
     )
 
-    graph.add_edge("keyword_upload", "keyword_review")
-    graph.add_edge("keyword_review", "keyword_classify")
-    graph.add_edge("keyword_classify", "copywriter")
+    graph.add_edge("keyword_upload", "keyword_classify")
+    graph.add_edge("keyword_classify", "keyword_classify_review")
+    graph.add_edge("keyword_classify_review", "copywriter")
     graph.add_edge("copywriter", "st_optimize")
     graph.add_edge("st_optimize", "export")
     graph.add_edge("export", END)
@@ -76,9 +76,15 @@ def _after_analyst(state: ListingState) -> str:
 
 
 def _after_human_review(state: ListingState) -> str:
-    """After human review, check if keyword library is available."""
+    """After human review, check if the keyword library is available.
+
+    The keyword library is always user-provided (uploaded at input time or at
+    the keyword_upload gate); there is no generation step to review. So once a
+    library exists we skip any keyword review and go straight to classification.
+    If it isn't there yet, pause at the upload gate to collect it.
+    """
     if MemoryHelper.has(state, "keyword_library"):
-        return "keyword_review"
+        return "keyword_classify"
     return "wait_keyword"
 
 
@@ -150,6 +156,11 @@ def create_app_graph(toolbox: ToolBox, checkpointer):
     graph = build_graph(toolbox)
     compiled = graph.compile(
         checkpointer=checkpointer,
-        interrupt_before=["wait_upload", "human_review", "keyword_upload", "keyword_review"],
+        interrupt_before=[
+            "wait_upload",
+            "human_review",
+            "keyword_upload",
+            "keyword_classify_review",
+        ],
     )
     return compiled

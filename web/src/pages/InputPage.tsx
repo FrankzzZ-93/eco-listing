@@ -60,13 +60,14 @@ interface FileInputProps {
   hint: string;
   required?: boolean;
   multiple?: boolean;
+  accept?: string;
   file?: File | null;
   files?: File[];
   onFileChange?: (file: File | null) => void;
   onFilesChange?: React.Dispatch<React.SetStateAction<File[]>>;
 }
 
-function FileInput({ label, hint, required, multiple, file, files, onFileChange, onFilesChange }: FileInputProps) {
+function FileInput({ label, hint, required, multiple, accept, file, files, onFileChange, onFilesChange }: FileInputProps) {
   const fileList = multiple
     ? (files ?? []).map((f, i) => ({ uid: String(i), name: f.name, status: 'done' as const }))
     : file ? [{ uid: '-1', name: file.name, status: 'done' as const }] : [];
@@ -80,7 +81,7 @@ function FileInput({ label, hint, required, multiple, file, files, onFileChange,
         {multiple && <Tag style={{ marginLeft: 4 }} color="blue">多文件</Tag>}
       </div>
       <Dragger
-        accept=".csv,.json,.txt,.md,.xlsx"
+        accept={accept ?? '.csv,.json,.txt,.md,.xlsx'}
         multiple={multiple}
         maxCount={multiple ? 20 : 1}
         beforeUpload={(f) => {
@@ -279,14 +280,25 @@ export default function InputPage() {
     if (productAttributesFile) uploadJobs.push({ file: productAttributesFile, kind: 'product_attributes' });
 
     let uploadFailed = false;
+    let attrUploadError: string | null = null;
     for (const job of uploadJobs) {
       try {
         await uploadFile(runId, job.file, job.kind);
-      } catch {
+      } catch (e) {
         uploadFailed = true;
+        if (job.kind === 'product_attributes') {
+          const err = e as { response?: { data?: { detail?: string } } };
+          attrUploadError = err?.response?.data?.detail ?? '本品属性表上传失败';
+        }
       }
     }
-    if (uploadFailed) {
+    // The product attribute table is special: if it fails to upload, the run
+    // will fall back to competitor-based generation, which is exactly the bug
+    // users hit. Surface a hard error (with the backend reason) instead of a
+    // soft warning, and don't pretend the upload succeeded.
+    if (attrUploadError) {
+      message.error(`本品属性表上传失败：${attrUploadError}。请确认为非空 JSON 文件后，在任务中重新上传。`);
+    } else if (uploadFailed) {
       message.warning('部分文件上传失败，可稍后在任务中重新上传');
     }
 
@@ -468,7 +480,7 @@ export default function InputPage() {
               <FileInput label="关键词词库" hint="鸥鹭出单词报告等" required file={keywordFile} onFileChange={setKeywordFile} />
             </Col>
             <Col span={12}>
-              <FileInput label="本品属性表" hint="上传则跳过认知层分析，直接使用（JSON 格式）" file={productAttributesFile} onFileChange={setProductAttributesFile} />
+              <FileInput label="本品属性表" hint="上传则跳过认知层分析，直接使用（仅支持 JSON 格式）" accept=".json" file={productAttributesFile} onFileChange={setProductAttributesFile} />
             </Col>
           </Row>
           <Row gutter={16}>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag } from 'antd';
-import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
 import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
 import DataPreviewCollapse from '../components/status/DataPreviewCollapse';
@@ -11,8 +11,9 @@ import AttributesReviewPanel from '../components/review/AttributesReviewPanel';
 import KeywordReviewPanel from '../components/review/KeywordReviewPanel';
 import ClassifiedKeywordsReviewPanel from '../components/review/ClassifiedKeywordsReviewPanel';
 import ListingPreview from '../components/output/ListingPreview';
+import CaptchaModal from '../components/common/CaptchaModal';
 import { useRunStatus } from '../hooks/useRunStatus';
-import { getFinal, pauseRun, resumeRun, stopRun } from '../api/runs';
+import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun } from '../api/runs';
 import type { FinalOutput } from '../types/listing';
 
 const { Sider, Content } = Layout;
@@ -27,6 +28,23 @@ export default function RunDashboard() {
   const [finalOutput, setFinalOutput] = useState<FinalOutput | null>(null);
   const [finalLoading, setFinalLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [captchaLoading, setCaptchaLoading] = useState(false);
+
+  const isCaptchaGate =
+    run?.status === 'waiting_human' && run.pending_action?.type === 'solve_captcha';
+
+  const handleCaptchaSubmit = async (answer: string) => {
+    setCaptchaLoading(true);
+    try {
+      await submitCaptcha(runId!, answer);
+      message.success('已提交验证，正在继续抓取…');
+      refresh();
+    } catch (e) {
+      reportActionError('提交验证', e);
+    } finally {
+      setCaptchaLoading(false);
+    }
+  };
 
   const handleReviewComplete = () => {
     setActiveTab('status');
@@ -146,6 +164,28 @@ export default function RunDashboard() {
     });
   };
 
+  const handleDelete = () => {
+    Modal.confirm({
+      title: '确认删除任务？',
+      content: '将停止并永久删除该任务，已产出的中间数据会一并清除，且无法恢复。',
+      okText: '停止并删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setActionLoading(true);
+        try {
+          await deleteRun(runId!);
+          message.success('任务已删除');
+          navigate('/new');
+        } catch (e) {
+          reportActionError('删除', e);
+        } finally {
+          setActionLoading(false);
+        }
+      },
+    });
+  };
+
   if (isLoading && !run) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: 100, flexDirection: 'column', gap: 16 }}>
@@ -195,6 +235,14 @@ export default function RunDashboard() {
               停止
             </Button>
           )}
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleDelete}
+            loading={actionLoading}
+          >
+            删除
+          </Button>
         </Space>
       </div>
       <Layout style={{ background: 'transparent', minHeight: 'calc(100vh - 130px)' }}>
@@ -386,6 +434,14 @@ export default function RunDashboard() {
           </Card>
         </Content>
       </Layout>
+
+      <CaptchaModal
+        open={!!isCaptchaGate}
+        message={run?.pending_action?.message}
+        imageUrl={run?.pending_action?.image_url}
+        loading={captchaLoading}
+        onSubmit={handleCaptchaSubmit}
+      />
     </div>
   );
 }

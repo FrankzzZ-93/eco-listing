@@ -227,6 +227,14 @@ export default function AttributesReviewPanel({
     }
   };
 
+  // Uploaded tables are normalized to the canonical schema server-side, but an
+  // older run or a failed conversion may carry a non-standard shape. When none
+  // of the known top-level keys are present, fall back to a generic JSON view
+  // (editable via the "JSON 编辑" modal) so the panel never looks empty.
+  const isCanonicalShape = ['basic_info', 'market_analysis', 'copywriting_ref'].some(
+    (k) => Object.prototype.hasOwnProperty.call(data, k),
+  );
+
   const basicInfo = ensureObj(data.basic_info);
   const productName = ensureObj(basicInfo.product_name);
   const productDim = ensureObj(basicInfo.product_dimensions);
@@ -451,13 +459,42 @@ export default function AttributesReviewPanel({
         />
       )}
 
-      <div style={readOnly ? { pointerEvents: 'none', opacity: 0.9 } : undefined}>
-        <Collapse
-          defaultActiveKey={['basic_info', 'market_analysis', 'copywriting_ref']}
-          items={collapseItems}
-          style={{ background: 'transparent' }}
-        />
-      </div>
+      {isCanonicalShape ? (
+        <div style={readOnly ? { pointerEvents: 'none', opacity: 0.9 } : undefined}>
+          <Collapse
+            defaultActiveKey={['basic_info', 'market_analysis', 'copywriting_ref']}
+            items={collapseItems}
+            style={{ background: 'transparent' }}
+          />
+        </div>
+      ) : (
+        <div>
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="非标准模板结构"
+            description={
+              readOnly
+                ? '该属性表结构与内置模板不同，以下为通用 JSON 视图。'
+                : '该属性表结构与内置模板不同，已转为通用 JSON 视图。可点击右上角「JSON 编辑」修改后通过。'
+            }
+          />
+          <pre
+            style={{
+              maxHeight: 480,
+              overflow: 'auto',
+              background: '#fafafa',
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 12,
+              margin: 0,
+            }}
+          >
+            {JSON.stringify(data, null, 2)}
+          </pre>
+        </div>
+      )}
 
       <Divider style={{ margin: '16px 0' }} />
 

@@ -11,6 +11,7 @@ __pycache__/
 .env
 .env.local
 llm_settings.json
+app_settings.json
 
 # --- Node / frontend ---
 web/node_modules/

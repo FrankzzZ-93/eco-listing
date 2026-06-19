@@ -35,7 +35,7 @@ export default function AppHeader() {
           icon={<ApiOutlined />}
           onClick={() => navigate('/settings')}
         >
-          模型设置
+          配置中心
         </Button>
         <Button
           type={location.pathname === '/prompts' ? 'primary' : 'text'}

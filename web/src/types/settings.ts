@@ -20,3 +20,50 @@ export interface LlmTestResult {
   ok: boolean;
   message: string;
 }
+
+export type ReviewEngine = 'browser_act' | 'builtin';
+
+export interface AppSettings {
+  account: {
+    site: string;
+    email: string;
+    password_set: boolean;
+    proxy_region: string;
+  };
+  scrape: {
+    browser_headless: boolean;
+    scrape_max_review_pages: number;
+    research_concurrency: number;
+    codex_timeout: number;
+  };
+  review_engine: ReviewEngine;
+}
+
+export interface AppSettingsUpdate {
+  account?: {
+    site?: string;
+    email?: string;
+    // Omit/empty to keep the stored password unchanged.
+    password?: string;
+    proxy_region?: string;
+  };
+  scrape?: Partial<AppSettings['scrape']>;
+  review_engine?: ReviewEngine;
+}
+
+export type AccountState =
+  | 'idle'
+  | 'logging_in'
+  | 'waiting_captcha'
+  | 'logged_in'
+  | 'failed'
+  | 'unavailable';
+
+export interface AccountStatus {
+  available: boolean;
+  state: AccountState;
+  message: string;
+  image_url: string;
+  updated_at: string;
+  account_email: string;
+}

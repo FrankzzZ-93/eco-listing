@@ -21,6 +21,10 @@ export async function submitReview(runId: string, review: ReviewSubmission): Pro
   await client.put(`/runs/${runId}/review`, review);
 }
 
+export async function submitCaptcha(runId: string, answer: string): Promise<void> {
+  await client.post(`/runs/${runId}/captcha`, { answer });
+}
+
 export async function uploadFile(
   runId: string,
   file: File,

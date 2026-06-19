@@ -37,10 +37,20 @@
 # Codex CLI（OpenAI Codex，npm 全局安装）
 npm install -g @openai/codex
 
+# browser-act CLI（登录态抓取竞品评论用；通过 uv 安装）
+# 若无 uv：curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install browser-act-cli --python 3.12
+# 网络受公司代理影响导致证书报错时，加 --native-tls 重试
+
 # 验证
-node --version      # 应 >= v18
-codex --version     # 应输出 codex-cli x.y.z
+node --version          # 应 >= v18
+codex --version         # 应输出 codex-cli x.y.z
+browser-act --version   # 应输出 browser-act x.y.z
 ```
+
+> `browser-act` 通常装到 `~/.local/bin`；若后端进程的 `PATH` 不含该目录，
+> 代码会自动探测常见安装路径，一般无需额外配置。未安装时「内置引擎」
+> （Playwright + Codex）仍可用作降级。
 
 ### 2.2 登录 Codex（关键步骤，否则所有生成都会失败）
 
@@ -63,6 +73,19 @@ ls ~/.codex/auth.json   # 存在即表示已登录
 - **API Key**：中转站或服务商提供的密钥。
 
 保存前可点「测试连接」校验配置。该设置仅作用于文案撰写环节，其他步骤仍使用 codex-cli；配置持久化在项目根目录 `llm_settings.json`（含密钥，已在 `.gitignore` 中忽略，请勿入库）。不配置则保持默认 codex-cli 行为。
+
+### 2.4 账号登录与抓取设置（统一配置入口）
+
+前端顶部「配置中心」是账号登录、抓取参数、文案模型的统一入口：
+
+- **账号与登录**：填写 Amazon 站点 / 邮箱 / 密码后点「登录并记住登录态」。系统通过 `browser-act` 打开一个持久化浏览器完成登录；登录态保存在 browser-act 的浏览器配置中，后续抓取无需重复登录。
+- **代理地区**：可选项。`browser-act` 的 stealth 浏览器默认走本机出口 IP；若本机 IP 被 Amazon 按地理位置跳转到了错误的站点（例如澳洲 IP 访问 `amazon.com` 会被跳到 `amazon.com.au`，导致美国站账号无法识别），可在此填地区码（如 `US`），让浏览器从该国出口。留空即用本机 IP。修改后需删除旧的 `eco_listing` 浏览器以新代理重建（`browser-act browser delete <id>` 后由系统自动重建）。
+- **遇到验证码**：登录或抓取过程中若出现人机验证 / 验证码，页面会自动弹出弹窗并展示验证截图；输入后系统自动继续执行（任务侧验证在任务详情页弹窗，登录侧验证在配置中心弹窗）。
+- **抓取设置**：可选「评论抓取引擎」（`browser-act` 登录态 / 内置 Playwright+Codex 降级），以及评论页数、并发数、Codex 超时、无头模式等。
+
+> 说明：Amazon **评论列表页强制登录**（未登录会跳转到登录页，系统会识别为验证拦截并暂停）；而商品页的 **Rufus AI 助手（页面内「Alexa AI — Looking for specific info?」组件，项目内沿用旧称 Alex）的建议问题属于公开数据，无需登录即可抓取**。系统抓取的是该组件里 AI 生成的「建议提问」列表（用于反推优化 listing），并非「Customers say」评论摘要，也不是单条用户评论。
+
+该配置持久化在项目根目录 `app_settings.json`（含账号密码，已在 `.gitignore` 中忽略，请勿入库）。
 
 ---
 

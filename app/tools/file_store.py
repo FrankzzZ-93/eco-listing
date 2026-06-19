@@ -1,6 +1,23 @@
 import json
 import os
 
+from app.config import settings
+
+
+def to_artifact_url(image_path: str) -> str:
+    """Map an on-disk path under ``artifacts_dir`` to its ``/artifacts`` URL.
+
+    Single source of truth shared by the research node and the account-session
+    manager (both surface captcha screenshots to the frontend).
+    """
+    if not image_path:
+        return ""
+    try:
+        rel = os.path.relpath(image_path, settings.artifacts_dir)
+        return f"/artifacts/{rel}"
+    except ValueError:
+        return ""
+
 
 class FileStoreTool:
     def __init__(self, base_dir: str):

@@ -29,10 +29,19 @@ export interface MemorySnapshot {
 }
 
 export interface PendingAction {
-  type: 'review_product_attributes' | 'upload_keywords' | 'review_classified_keywords' | 'review_listing_draft';
+  type:
+    | 'review_product_attributes'
+    | 'upload_keywords'
+    | 'review_classified_keywords'
+    | 'review_listing_draft'
+    | 'solve_captcha'
+    | 'upload_competitor_data';
   data?: Record<string, unknown>;
   message?: string;
   agent_notes?: string;
+  // Captcha gate only:
+  image_url?: string;
+  context?: 'scrape' | 'login';
 }
 
 export interface LiveCodexProgress {

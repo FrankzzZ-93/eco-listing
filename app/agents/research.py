@@ -8,11 +8,14 @@ import os
 import time
 from typing import Awaitable, Callable
 
+from app import app_settings
 from app.agents.base import ToolBox
 from app.config import settings
+from app.errors import CaptchaRequiredError
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
 from app.tools import codex_progress
+from app.tools.file_store import to_artifact_url
 
 
 async def _scrape_all(
@@ -62,7 +65,10 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
     logs = []
     t0 = time.time()
     run_id = state.get("run_id", "")
-    concurrency = settings.research_concurrency
+    concurrency = app_settings.get_scrape_param("research_concurrency", settings.research_concurrency)
+    max_review_pages = app_settings.get_scrape_param(
+        "scrape_max_review_pages", settings.scrape_max_review_pages
+    )
 
     try:
         # If a ready-made 本品属性表 was uploaded, skip the entire cognitive layer
@@ -120,22 +126,41 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
         alex_qs = list(state.get("alex_questions") or state.get("rufus_questions") or [])
 
         if not alex_qs and competitor_asins and toolbox.browser:
-            scraped = await _scrape_all(
-                run_id,
-                "alex",
-                competitor_asins,
-                lambda a: toolbox.browser.scrape_alex(a, site),
-                concurrency,
-            )
+            try:
+                scraped = await _scrape_all(
+                    run_id,
+                    "alex",
+                    competitor_asins,
+                    lambda a: toolbox.browser.scrape_alex(a, site, run_id=run_id),
+                    concurrency,
+                )
+            except CaptchaRequiredError as e:
+                # browser-act session parked on the challenge — pause and surface it.
+                return {
+                    "competitor_listings": listings,
+                    "status": "waiting_human",
+                    "pending_action": {
+                        "type": "solve_captcha",
+                        "context": e.context,
+                        "image_url": to_artifact_url(e.image_path),
+                        "message": str(e),
+                    },
+                    "agent_log": logs
+                    + [
+                        MemoryHelper.log_action(
+                            "research", "captcha_required", context=e.context
+                        )
+                    ],
+                }
             for asin, alex_result, dur in scraped:
-                qa = alex_result.get("qa_pairs", [])
-                alex_qs.extend(qa)
+                questions = alex_result.get("questions", [])
+                alex_qs.extend(questions)
                 logs.append(
                     MemoryHelper.log_action(
                         "research",
                         "scrape_alex",
                         asin=asin,
-                        qa_count=len(qa),
+                        question_count=len(questions),
                         has_error="error" in alex_result,
                         duration_ms=dur,
                     )
@@ -167,13 +192,37 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
         reviews = list(state.get("customer_reviews", []))
 
         if not reviews and competitor_asins and toolbox.browser:
-            scraped = await _scrape_all(
-                run_id,
-                "reviews",
-                competitor_asins,
-                lambda a: toolbox.browser.scrape_reviews(a, site),
-                concurrency,
-            )
+            try:
+                scraped = await _scrape_all(
+                    run_id,
+                    "reviews",
+                    competitor_asins,
+                    lambda a: toolbox.browser.scrape_reviews(
+                        a, site, max_pages=max_review_pages, run_id=run_id
+                    ),
+                    concurrency,
+                )
+            except CaptchaRequiredError as e:
+                # The browser-act session is parked on the verification page.
+                # Pause the run and surface the challenge to the UI; on resume,
+                # already-collected listings/Alex are skipped and reviews retry.
+                return {
+                    "competitor_listings": listings,
+                    "alex_questions": alex_qs,
+                    "status": "waiting_human",
+                    "pending_action": {
+                        "type": "solve_captcha",
+                        "context": e.context,
+                        "image_url": to_artifact_url(e.image_path),
+                        "message": str(e),
+                    },
+                    "agent_log": logs
+                    + [
+                        MemoryHelper.log_action(
+                            "research", "captcha_required", context=e.context
+                        )
+                    ],
+                }
             for asin, asin_reviews, dur in scraped:
                 reviews.extend(asin_reviews)
                 logs.append(

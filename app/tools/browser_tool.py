@@ -1,10 +1,20 @@
-"""Dual-layer browser tool: Playwright (fast/cheap) with Codex CLI fallback (smart/resilient)."""
+"""Dual-layer browser tool: Playwright (fast/cheap) with Codex CLI fallback (smart/resilient).
+
+Reviews can additionally be scraped via the logged-in ``browser-act`` engine
+(see :class:`~app.tools.browser_act_scraper.BrowserActScraper`), selected by the
+``review_engine`` setting in :mod:`app.app_settings`. The browser-act scraper is
+shared as ``self.browser_act`` so the captcha-submit endpoint can drive the same
+live session that a paused run left parked on a verification page.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+import os
+from typing import Any, Optional
 
+from app.config import settings
+from app.errors import CaptchaRequiredError, LoginRequiredError
 from app.tools.playwright_scraper import PlaywrightScraper, AntiScrapingError
 from app.tools.codex_tool import CodexTool, CodexToolError
 
@@ -15,6 +25,8 @@ class BrowserTool:
     """Unified browser interface for the Research Agent.
 
     Strategy:
+      Layer 0 — browser-act: logged-in, session-persistent review scraping
+               (primary for reviews when configured). Surfaces captchas.
       Layer 1 — Playwright: fast, precise, low-cost structured scraping.
       Layer 2 — Codex CLI: LLM-driven browser for anti-scraping fallback
                and complex interactions (Alex Q&A expansion, dynamic content).
@@ -23,6 +35,21 @@ class BrowserTool:
     def __init__(self):
         self.scraper = PlaywrightScraper()
         self.codex = CodexTool()
+        # Lazily constructed shared browser-act review scraper. Kept as a single
+        # instance so a parked captcha session can be resumed by the API layer.
+        self._browser_act: Optional[Any] = None
+
+    @property
+    def browser_act(self):
+        """Shared ReviewScraper instance (constructed on first access)."""
+        if self._browser_act is None:
+            from app.tools.browser_act_scraper import ReviewScraper
+            from app import app_settings
+
+            headed = not app_settings.get_scrape_param("browser_headless", True)
+            proxy_region = app_settings.get_account().get("proxy_region", "")
+            self._browser_act = ReviewScraper(headed=headed, proxy_region=proxy_region)
+        return self._browser_act
 
     async def scrape_listing(self, asin: str, site: str) -> dict[str, Any]:
         """Get product listing content (title, bullets, description, A+).
@@ -51,12 +78,54 @@ class BrowserTool:
             return await self._codex_scrape_listing(asin, site)
 
     async def scrape_reviews(
-        self, asin: str, site: str, max_pages: int = 3
+        self,
+        asin: str,
+        site: str,
+        max_pages: int = 3,
+        run_id: str | None = None,
+        target_count: int = 20,
     ) -> list[dict[str, Any]]:
         """Get customer reviews.
 
-        Tries Playwright first; falls back to Codex on anti-scraping or empty results.
+        When the ``review_engine`` setting is ``browser_act`` and browser-act is
+        available, scrape from the logged-in browser-act session first. A
+        ``CaptchaRequiredError`` from that engine is deliberately NOT caught —
+        it propagates to the research node so the run pauses and the web UI can
+        pop a captcha modal. Other failures fall back to Playwright -> Codex.
         """
+        engine = self._review_engine()
+        if engine == "browser_act":
+            scraper = self.browser_act
+            if scraper.available():
+                screenshot_dir = (
+                    os.path.join(settings.artifacts_dir, run_id) if run_id else None
+                )
+                try:
+                    reviews = await scraper.get_reviews(
+                        asin,
+                        site,
+                        max_pages=max_pages,
+                        target_count=target_count,
+                        screenshot_dir=screenshot_dir,
+                    )
+                    if reviews:
+                        logger.info(
+                            "Reviews scraped via browser-act: %s/%s (%d reviews)",
+                            site, asin, len(reviews),
+                        )
+                        return reviews
+                    logger.warning(
+                        "browser-act returned 0 reviews for %s/%s, falling back",
+                        site, asin,
+                    )
+                except CaptchaRequiredError:
+                    # Surface to the caller (research node) — do not retry/fallback.
+                    raise
+                except LoginRequiredError as e:
+                    logger.warning("browser-act login required (%s), falling back", e)
+                except Exception as e:
+                    logger.warning("browser-act review scrape error (%s), falling back", e)
+
         try:
             reviews = await self.scraper.get_reviews(asin, site, max_pages=max_pages)
             if reviews:
@@ -75,29 +144,75 @@ class BrowserTool:
             logger.warning("Playwright error for reviews (%s), falling back to Codex", e)
             return await self._codex_scrape_reviews(asin, site)
 
-    async def scrape_alex(self, asin: str, site: str) -> dict[str, Any]:
-        """Get Alex Q&A content. Always uses Codex CLI (requires interaction)."""
-        logger.info("Scraping Alex Q&A via Codex CLI: %s/%s", site, asin)
+    async def scrape_alex(
+        self, asin: str, site: str, run_id: str | None = None
+    ) -> dict[str, Any]:
+        """Get Alex (Rufus "Looking for specific info?") suggested questions.
+
+        "Alex" is this project's name for Amazon's Rufus AI shopping assistant.
+        Returns ``{"questions": [str, ...]}`` — the AI-suggested shopper
+        questions the listing pipeline optimizes against.
+
+        When ``review_engine`` is ``browser_act`` and available, read it from the
+        browser-act session first (fast, no LLM). A ``CaptchaRequiredError``
+        propagates so the run can pause; other failures or an empty result fall
+        back to the Codex CLI engine.
+        """
+        if self._review_engine() == "browser_act":
+            scraper = self.browser_act
+            if scraper.available():
+                screenshot_dir = (
+                    os.path.join(settings.artifacts_dir, run_id) if run_id else None
+                )
+                try:
+                    result = await scraper.get_alex(
+                        asin, site, screenshot_dir=screenshot_dir
+                    )
+                    if result.get("questions"):
+                        logger.info(
+                            "Rufus questions scraped via browser-act: %s/%s (%d)",
+                            site, asin, len(result["questions"]),
+                        )
+                        return result
+                    logger.warning(
+                        "browser-act returned 0 Rufus questions for %s/%s, falling back to Codex",
+                        site, asin,
+                    )
+                except CaptchaRequiredError:
+                    raise
+                except LoginRequiredError as e:
+                    logger.warning("browser-act login required for Alex (%s), falling back", e)
+                except Exception as e:
+                    logger.warning("browser-act Alex scrape error (%s), falling back", e)
+
+        return await self._codex_scrape_alex(asin, site)
+
+    async def _codex_scrape_alex(self, asin: str, site: str) -> dict[str, Any]:
+        """Fallback: use Codex CLI to scrape Rufus suggested questions."""
+        logger.info("Scraping Rufus questions via Codex CLI: %s/%s", site, asin)
         url = f"https://{site}/dp/{asin}"
 
         try:
-            return await self.codex.interact_and_extract(
+            result = await self.codex.interact_and_extract(
                 url=url,
                 steps=[
-                    "Look for the Amazon 'Alex' AI shopping assistant Q&A section "
-                    "(also shown as 'Customers say' or 'AI-generated from the text of customer reviews')",
-                    "If there is a 'Show more' or expand button, click it to reveal all Q&A content",
-                    "Wait for the expanded content to fully load",
+                    "Scroll down the product page to the 'Alexa AI — Looking for "
+                    "specific info?' (Rufus) widget, which sits near the reviews",
+                    "Wait for the AI-suggested question pills/chips to fully load",
                 ],
                 extract_instruction=(
-                    "Extract all Alex Q&A pairs. For each entry, capture the question/topic "
-                    "and the corresponding answer/summary. Return as JSON with key 'qa_pairs' "
-                    "containing a list of objects with 'question' and 'answer' fields."
+                    "Extract every AI-suggested shopper question shown in the Rufus "
+                    "'Looking for specific info?' widget (the clickable question "
+                    "pills). Ignore any sponsored items. Return JSON with key "
+                    "'questions' containing a flat list of the question strings."
                 ),
             )
+            qs = result.get("questions") if isinstance(result, dict) else None
+            questions = [q for q in qs if isinstance(q, str)] if isinstance(qs, list) else []
+            return {"questions": questions}
         except CodexToolError as e:
-            logger.error("Codex failed to scrape Alex: %s", e)
-            return {"qa_pairs": [], "error": str(e)}
+            logger.error("Codex failed to scrape Rufus questions: %s", e)
+            return {"questions": [], "error": str(e)}
 
     async def _codex_scrape_listing(self, asin: str, site: str) -> dict[str, Any]:
         """Fallback: use Codex CLI to scrape listing content."""
@@ -189,6 +304,20 @@ class BrowserTool:
         logger.warning("All Codex review attempts returned 0 for %s", asin)
         return []
 
+    @staticmethod
+    def _review_engine() -> str:
+        try:
+            from app import app_settings
+
+            return app_settings.get_review_engine()
+        except Exception:
+            return "builtin"
+
     async def close(self):
         """Clean up browser resources."""
         await self.scraper.close()
+        if self._browser_act is not None:
+            try:
+                await self._browser_act.close()
+            except Exception:
+                logger.debug("browser-act close failed", exc_info=True)

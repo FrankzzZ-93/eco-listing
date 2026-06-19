@@ -17,6 +17,7 @@ import {
   Table,
   Empty,
   Progress,
+  Popconfirm,
 } from 'antd';
 import {
   PlusOutlined,
@@ -33,10 +34,13 @@ import {
   ExclamationCircleOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
+import { SettingOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { createRun, startRun, listRuns, uploadFile, deleteRun } from '../api/runs';
+import { getAccountStatus } from '../api/account';
 import { isValidAsin, normalizeAsin } from '../utils/asinValidator';
 import type { RunSummary } from '../types/run';
+import type { AccountStatus } from '../types/settings';
 
 const { Dragger } = Upload;
 const { Title, Text, Paragraph } = Typography;
@@ -150,7 +154,7 @@ const STATUS_LABEL: Record<string, string> = {
   unknown: '未知',
 };
 
-function ActiveRunCard({ run, onClick }: { run: RunSummary; onClick: () => void }) {
+function ActiveRunCard({ run, onClick, onDelete }: { run: RunSummary; onClick: () => void; onDelete: () => void }) {
   const percent = run.total_steps > 0
     ? Math.round((run.completed_steps / run.total_steps) * 100)
     : 0;
@@ -193,9 +197,26 @@ function ActiveRunCard({ run, onClick }: { run: RunSummary; onClick: () => void 
           />
         </Col>
         <Col>
-          <Button type="primary" size="small" ghost icon={<EyeOutlined />}>
-            查看
-          </Button>
+          <Space size={4}>
+            <Button type="primary" size="small" ghost icon={<EyeOutlined />}>
+              查看
+            </Button>
+            <Popconfirm
+              title="删除任务"
+              description="将停止并永久删除该任务，已产出数据一并清除。"
+              okText="停止并删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={onDelete}
+            >
+              <Button
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Popconfirm>
+          </Space>
         </Col>
       </Row>
     </Card>
@@ -211,6 +232,7 @@ export default function InputPage() {
   const [productAttributesFile, setProductAttributesFile] = useState<File | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
+  const [accStatus, setAccStatus] = useState<AccountStatus | null>(null);
   const navigate = useNavigate();
 
   const fetchRuns = () => {
@@ -224,6 +246,7 @@ export default function InputPage() {
   useEffect(() => {
     fetchRuns();
     const timer = setInterval(fetchRuns, 5000);
+    getAccountStatus().then(setAccStatus).catch(() => {});
     return () => clearInterval(timer);
   }, []);
 
@@ -292,13 +315,27 @@ export default function InputPage() {
         }
       }
     }
-    // The product attribute table is special: if it fails to upload, the run
-    // will fall back to competitor-based generation, which is exactly the bug
-    // users hit. Surface a hard error (with the backend reason) instead of a
-    // soft warning, and don't pretend the upload succeeded.
+    // The product attribute table is special: a failed upload/conversion would
+    // otherwise let the run start and silently fall back to competitor-based
+    // generation. Per requirement #1, do NOT start the flow in that case —
+    // clean up the just-created (empty) run and ask the user to fix or remove
+    // the file before retrying.
     if (attrUploadError) {
-      message.error(`本品属性表上传失败：${attrUploadError}。请确认为非空 JSON 文件后，在任务中重新上传。`);
-    } else if (uploadFailed) {
+      message.error(
+        `本品属性表上传/转换失败：${attrUploadError}。流程未启动，请修正或移除该文件后重试。`,
+      );
+      try {
+        await deleteRun(runId);
+      } catch {
+        // best-effort cleanup; ignore
+      }
+      // Keep the form intact (ASINs, files) so the user can fix or remove the
+      // bad attribute file and resubmit without re-entering everything.
+      fetchRuns();
+      setLoading(false);
+      return;
+    }
+    if (uploadFailed) {
       message.warning('部分文件上传失败，可稍后在任务中重新上传');
     }
 
@@ -388,8 +425,40 @@ export default function InputPage() {
     },
   ];
 
+  const accLoggedIn = accStatus?.state === 'logged_in';
+  const accLabel = accStatus
+    ? accStatus.available === false
+      ? 'browser-act 未安装'
+      : accLoggedIn
+        ? `已登录${accStatus.account_email ? `（${accStatus.account_email}）` : ''}`
+        : '未登录'
+    : '检测中…';
+
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', paddingTop: 24 }}>
+      {/* Unified config entry: account login + scrape params + model */}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Row align="middle" justify="space-between" gutter={16}>
+          <Col flex="auto">
+            <Space size={8} wrap>
+              <SettingOutlined style={{ color: '#1677ff' }} />
+              <Text strong>数据源 / 账号配置</Text>
+              <Tag color={accLoggedIn ? 'green' : accStatus?.available === false ? 'red' : 'default'}>
+                {accLabel}
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                登录账号后可抓取需要登录的竞品评论，并记住登录态
+              </Text>
+            </Space>
+          </Col>
+          <Col>
+            <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>
+              前往配置中心
+            </Button>
+          </Col>
+        </Row>
+      </Card>
+
       {/* Active tasks - shown prominently at the top */}
       {activeRuns.length > 0 && (
         <Card style={{ marginBottom: 24 }} title={`进行中的任务（${activeRuns.length}）`}>
@@ -398,6 +467,11 @@ export default function InputPage() {
               key={run.run_id}
               run={run}
               onClick={() => navigate(`/run/${run.run_id}`)}
+              onDelete={() => {
+                deleteRun(run.run_id)
+                  .then(() => { message.success('已删除'); fetchRuns(); })
+                  .catch(() => message.error('删除失败'));
+              }}
             />
           ))}
         </Card>
@@ -480,7 +554,7 @@ export default function InputPage() {
               <FileInput label="关键词词库" hint="鸥鹭出单词报告等" required file={keywordFile} onFileChange={setKeywordFile} />
             </Col>
             <Col span={12}>
-              <FileInput label="本品属性表" hint="上传则跳过认知层分析，直接使用（仅支持 JSON 格式）" accept=".json" file={productAttributesFile} onFileChange={setProductAttributesFile} />
+              <FileInput label="本品属性表" hint="仅测试用：上传则跳过竞品采集，直接审核（支持 Excel/MD/JSON，自动转换）" accept=".json,.xlsx,.md,.txt" file={productAttributesFile} onFileChange={setProductAttributesFile} />
             </Col>
           </Row>
           <Row gutter={16}>

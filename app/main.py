@@ -45,6 +45,9 @@ async def lifespan(app: FastAPI):
         from app.llm_settings import load_llm_settings
         load_llm_settings()
 
+        from app.app_settings import load_app_settings
+        load_app_settings()
+
         _state.load_registry()
         await _recover_stale_runs(graph)
 
@@ -76,7 +79,7 @@ async def _recover_stale_runs(graph):
 
             status = state.values.get("status", "")
             next_nodes = state.next if state.next else ()
-            waiting_nodes = {"wait_upload", "human_review", "keyword_upload", "keyword_classify_review"}
+            waiting_nodes = {"wait_upload", "wait_verify", "human_review", "keyword_upload", "keyword_classify_review"}
 
             if status in terminal_statuses:
                 continue

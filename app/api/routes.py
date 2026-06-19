@@ -23,6 +23,7 @@ PROMPTS_DIR = "prompts"
 # Keep in sync with create_app_graph(...).interrupt_before in orchestrator.py.
 _WAITING_NODES = (
     "wait_upload",
+    "wait_verify",
     "human_review",
     "keyword_upload",
     "keyword_classify_review",
@@ -208,7 +209,13 @@ async def get_run(run_id: str):
 
     if next_nodes and any(n in next_nodes for n in _WAITING_NODES):
         effective_status = "waiting_human"
-        pending = _pending_action_for(next_nodes)
+        # A captcha gate stores a rich pending_action (image_url, context) in
+        # state; keep it instead of the generic node-derived message.
+        stored = snapshot.get("pending_action") or {}
+        if "wait_verify" in next_nodes and stored.get("type") == "solve_captcha":
+            pending = stored
+        else:
+            pending = _pending_action_for(next_nodes)
     else:
         effective_status = snapshot.get("status", "running")
         pending = snapshot.get("pending_action")
@@ -312,6 +319,8 @@ def _pending_action_for(next_nodes) -> dict:
         return {"type": "upload_keywords", "message": "请上传关键词词库"}
     if "keyword_classify_review" in next_nodes:
         return {"type": "review_classified_keywords", "message": "请审核关键词分类结果"}
+    if "wait_verify" in next_nodes:
+        return {"type": "solve_captcha", "message": "请完成人机验证"}
     return {}
 
 
@@ -333,6 +342,44 @@ async def submit_review(run_id: str, req: SubmitReviewRequest):
     if req.approved_data:
         update["product_attributes_draft"] = req.approved_data
     await graph.aupdate_state(config, update)
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "accepted"}
+
+
+class SubmitCaptchaRequest(BaseModel):
+    answer: str
+
+
+@router.post("/runs/{run_id}/captcha")
+async def submit_captcha(run_id: str, req: SubmitCaptchaRequest):
+    """Feed a user-entered captcha/verification answer into the parked browser-act
+    session, then resume the run (research re-enters and retries the reviews scrape)."""
+    import logging
+
+    from app.api._state import get_toolbox, set_run_task
+
+    logger = logging.getLogger("eco_listing")
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    pending = state.values.get("pending_action") or {}
+    if pending.get("type") != "solve_captcha":
+        raise HTTPException(400, "当前任务未在等待人机验证")
+
+    # Type the answer into the same live session that is parked on the challenge.
+    try:
+        toolbox = get_toolbox()
+        if toolbox.browser is not None:
+            await toolbox.browser.browser_act.submit_verification(req.answer)
+    except Exception:
+        logger.warning("submit_verification failed for run %s", run_id, exc_info=True)
+
+    await graph.aupdate_state(config, {"status": "running", "pending_action": {}})
     task = asyncio.create_task(_resume_graph(run_id))
     set_run_task(run_id, task)
     return {"status": "accepted"}
@@ -491,17 +538,53 @@ async def upload_data(
         # Ready-made 本品属性表 (product attribute table). When provided we seed it
         # as the analyst draft so the cognitive-layer LLM analysis is skipped
         # entirely (see research_node / orchestrator routing) and the uploaded
-        # table is used as-is.
+        # table is used as-is. Accepts excel/md/json; non-canonical content is
+        # LLM-normalized into the internal schema so the review panel renders.
         if data_type == "product_attributes":
-            if not (file.filename and file.filename.lower().endswith(".json")):
-                raise HTTPException(400, "本品属性表请上传 JSON 文件")
-            try:
-                data = json.loads(content)
-            except json.JSONDecodeError:
-                raise HTTPException(400, "本品属性表 JSON 解析失败")
-            if not isinstance(data, dict) or not data:
-                raise HTTPException(400, "本品属性表需为非空 JSON 对象")
-            update = {"product_attributes_draft": data}
+            from app.tools import attr_convert
+
+            fname = (file.filename or "").lower()
+            canonical: dict | None = None
+            raw_text = ""
+
+            if fname.endswith(".json"):
+                try:
+                    parsed = json.loads(content)
+                except json.JSONDecodeError:
+                    raise HTTPException(400, "本品属性表 JSON 解析失败")
+                if attr_convert.is_canonical(parsed):
+                    canonical = parsed
+                elif isinstance(parsed, (dict, list)) and parsed:
+                    # Non-canonical JSON (e.g. Chinese-keyed): normalize via LLM.
+                    raw_text = json.dumps(parsed, ensure_ascii=False, indent=2)
+                else:
+                    raise HTTPException(400, "本品属性表需为非空 JSON")
+            elif fname.endswith(".xlsx"):
+                try:
+                    raw_text = attr_convert.xlsx_to_markdown(content)
+                except Exception:
+                    raise HTTPException(400, "本品属性表 Excel 解析失败")
+                if not raw_text:
+                    raise HTTPException(400, "本品属性表 Excel 为空")
+            elif fname.endswith((".md", ".txt")):
+                raw_text = content.decode("utf-8", errors="replace").strip()
+                if not raw_text:
+                    raise HTTPException(400, "本品属性表文件为空")
+            else:
+                raise HTTPException(400, "本品属性表支持 .json / .xlsx / .md / .txt 文件")
+
+            if canonical is None:
+                try:
+                    canonical = await attr_convert.normalize_uploaded_attributes(
+                        toolbox, raw_text
+                    )
+                except Exception as e:
+                    raise HTTPException(400, f"本品属性表转换失败：{e}")
+
+            if not isinstance(canonical, dict) or not canonical:
+                raise HTTPException(400, "本品属性表需为非空对象")
+
+            update = {"product_attributes_draft": canonical}
             if not is_pending:
                 update.update({"status": "running", "pending_action": {}})
             await graph.aupdate_state(config, update, **update_kwargs)
@@ -661,6 +744,76 @@ async def update_llm_settings(req: UpdateLlmSettingsRequest):
     return llm_settings.public_view(saved)
 
 
+# --- Unified App Settings (account + scrape params + engine) ---
+
+
+class AccountUpdate(BaseModel):
+    site: Optional[str] = None
+    email: Optional[str] = None
+    # Optional: when omitted/empty, the stored password is kept.
+    password: Optional[str] = None
+    # Optional stealth-browser exit region (e.g. "US"); empty = host IP.
+    proxy_region: Optional[str] = None
+
+
+class ScrapeUpdate(BaseModel):
+    browser_headless: Optional[bool] = None
+    scrape_max_review_pages: Optional[int] = None
+    research_concurrency: Optional[int] = None
+    codex_timeout: Optional[int] = None
+
+
+class UpdateAppSettingsRequest(BaseModel):
+    account: Optional[AccountUpdate] = None
+    scrape: Optional[ScrapeUpdate] = None
+    review_engine: Optional[str] = None
+
+
+@router.get("/settings/app")
+async def get_app_settings_route():
+    from app import app_settings
+
+    return app_settings.public_view()
+
+
+@router.put("/settings/app")
+async def update_app_settings_route(req: UpdateAppSettingsRequest):
+    from app import app_settings
+
+    if req.review_engine is not None and req.review_engine not in app_settings.VALID_ENGINES:
+        raise HTTPException(400, f"不支持的抓取引擎: {req.review_engine}")
+
+    current = app_settings.get_app_settings()
+
+    if req.account is not None:
+        if req.account.site is not None:
+            current["account"]["site"] = req.account.site.strip() or "amazon.com"
+        if req.account.email is not None:
+            current["account"]["email"] = req.account.email.strip()
+        # Keep existing password when the client sends nothing (GET masks it).
+        if req.account.password:
+            current["account"]["password"] = req.account.password
+        if req.account.proxy_region is not None:
+            current["account"]["proxy_region"] = req.account.proxy_region.strip()
+
+    if req.scrape is not None:
+        s = req.scrape
+        if s.browser_headless is not None:
+            current["scrape"]["browser_headless"] = s.browser_headless
+        for field in ("scrape_max_review_pages", "research_concurrency", "codex_timeout"):
+            val = getattr(s, field)
+            if val is not None:
+                if val <= 0:
+                    raise HTTPException(400, f"{field} 必须为正整数")
+                current["scrape"][field] = val
+
+    if req.review_engine is not None:
+        current["review_engine"] = req.review_engine
+
+    saved = app_settings.save_app_settings(current)
+    return app_settings.public_view(saved)
+
+
 @router.post("/settings/llm/test")
 async def test_llm_settings(req: TestLlmSettingsRequest):
     """Probe an OpenAI-compatible endpoint with a tiny request (no persistence)."""
@@ -684,6 +837,43 @@ async def test_llm_settings(req: TestLlmSettingsRequest):
 
     ok, message = await openai_compatible.probe(candidate)
     return {"ok": ok, "message": message}
+
+
+# --- Account Login Session Endpoints ---
+
+
+class AccountCaptchaRequest(BaseModel):
+    answer: str
+
+
+@router.get("/account/status")
+async def account_status(probe: bool = False):
+    from app import account_session
+
+    if probe:
+        return await account_session.refresh_status()
+    return account_session.get_status()
+
+
+@router.post("/account/login")
+async def account_login():
+    from app import account_session
+
+    return await account_session.start_login()
+
+
+@router.post("/account/captcha")
+async def account_captcha(req: AccountCaptchaRequest):
+    from app import account_session
+
+    return await account_session.submit_captcha(req.answer)
+
+
+@router.post("/account/logout")
+async def account_logout():
+    from app import account_session
+
+    return await account_session.logout()
 
 
 # --- Prompt Management Endpoints ---

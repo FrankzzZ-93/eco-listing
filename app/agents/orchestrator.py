@@ -22,6 +22,7 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
 
     graph.add_node("research", _bind(research_node, toolbox))
     graph.add_node("wait_upload", _passthrough)
+    graph.add_node("wait_verify", _passthrough)
     graph.add_node("product_analyst", _bind(product_analyst_node, toolbox))
     graph.add_node("human_review", _human_review_passthrough)
     graph.add_node("keyword_upload", _passthrough)
@@ -39,11 +40,16 @@ def build_graph(toolbox: ToolBox) -> StateGraph:
         {
             "product_analyst": "product_analyst",
             "wait_upload": "wait_upload",
+            "wait_verify": "wait_verify",
             "human_review": "human_review",
         },
     )
 
     graph.add_edge("wait_upload", "research")
+    # After the user solves the captcha, re-enter research; already-collected
+    # phases are skipped and the reviews scrape retries against the now-verified
+    # browser-act session.
+    graph.add_edge("wait_verify", "research")
 
     graph.add_conditional_edges(
         "product_analyst",
@@ -97,6 +103,9 @@ def _after_research(state: ListingState) -> str:
     uploaded table. Otherwise fall back to the normal scrape/analyze path.
     """
     if state.get("status") == "waiting_human":
+        pending = state.get("pending_action") or {}
+        if pending.get("type") == "solve_captcha":
+            return "wait_verify"
         return "wait_upload"
     if MemoryHelper.has(state, "product_attributes_draft"):
         return "human_review"
@@ -158,6 +167,7 @@ def create_app_graph(toolbox: ToolBox, checkpointer):
         checkpointer=checkpointer,
         interrupt_before=[
             "wait_upload",
+            "wait_verify",
             "human_review",
             "keyword_upload",
             "keyword_classify_review",

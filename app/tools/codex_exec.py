@@ -65,6 +65,28 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
+async def _feed_stdin(writer: asyncio.StreamWriter, data: bytes) -> None:
+    """Write the prompt to the subprocess stdin and close it (sends EOF).
+
+    The prompt is passed via stdin (not argv) so a large prompt — e.g. keyword
+    classification serializes the whole keyword library — can't blow past the
+    OS ``ARG_MAX`` limit (which surfaces as ``OSError: [Errno 7] Argument list
+    too long``). Runs concurrently with the output drains so a prompt larger
+    than the pipe buffer can't deadlock waiting for the child to read.
+    """
+    try:
+        writer.write(data)
+        await writer.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        # Child exited/closed stdin early — nothing more to send.
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
 async def _drain(
     stream: asyncio.StreamReader,
     sink: list[bytes],
@@ -130,9 +152,11 @@ def _make_progress_callback(run_id: Optional[str]) -> Optional[Callable[[bytes],
 
 
 async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
-    """Run a single `codex exec --json --ephemeral --ignore-rules <prompt>`.
+    """Run a single `codex exec --json --ephemeral --ignore-rules -` (prompt via stdin).
 
-    Streams stdout line-by-line so the progress sidecar
+    The prompt is piped to the process's stdin rather than passed as an argv so
+    a large prompt can't exceed the OS ``ARG_MAX`` limit. Streams stdout
+    line-by-line so the progress sidecar
     (``app.tools.codex_progress``) can publish per-event updates while the
     subprocess is still running. The full stdout is buffered and returned at
     the end so existing JSONL parsers in callers stay unchanged.
@@ -151,15 +175,18 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         CodexExecError: binary missing or subprocess returned a non-zero code.
     """
     effective_timeout = timeout if timeout is not None else settings.codex_timeout
-    prompt_bytes = len(prompt.encode("utf-8"))
+    prompt_data = prompt.encode("utf-8")
+    prompt_bytes = len(prompt_data)
 
+    # `-` makes codex read the prompt from stdin instead of an argv, so the
+    # prompt size is bounded by the pipe (not ARG_MAX). See _feed_stdin.
     cmd = [
         CODEX_BIN,
         "exec",
         "--json",
         "--ephemeral",
         "--ignore-rules",
-        prompt,
+        "-",
     ]
 
     logger.info(
@@ -178,7 +205,7 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,  # prompt is piped here, not passed as argv
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=None,  # inherit; codex CLI uses its own auth in ~/.codex/
@@ -194,10 +221,13 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         stderr_chunks: list[bytes] = []
         on_stdout = _make_progress_callback(run_id)
 
-        # Drain both pipes and wait for the process concurrently. If any
-        # task raises, ``gather`` cancels the rest, so we wrap the whole
-        # group in ``wait_for`` to enforce the hard timeout.
+        # Feed stdin, drain both pipes, and wait for the process concurrently.
+        # Feeding must be concurrent with draining so a prompt larger than the
+        # stdin pipe buffer can't deadlock. If any task raises, ``gather``
+        # cancels the rest, so we wrap the whole group in ``wait_for`` to
+        # enforce the hard timeout.
         gather = asyncio.gather(
+            _feed_stdin(proc.stdin, prompt_data),
             _drain(proc.stdout, stdout_chunks, on_stdout),
             _drain(proc.stderr, stderr_chunks),
             proc.wait(),

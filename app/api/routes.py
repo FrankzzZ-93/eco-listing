@@ -347,6 +347,130 @@ async def submit_review(run_id: str, req: SubmitReviewRequest):
     return {"status": "accepted"}
 
 
+class SaveAttributesRequest(BaseModel):
+    data: dict
+
+
+@router.put("/runs/{run_id}/attributes")
+async def save_attributes(run_id: str, req: SaveAttributesRequest):
+    """Persist edited product attributes without resuming the graph.
+
+    Lets the user revise the attribute table after the run has moved past the
+    review gate (e.g. before regenerating the listing). Both the draft and the
+    approved copy are updated so downstream nodes and the review panel agree.
+    Refused while the run is actively running to avoid a mid-node write race.
+    """
+    if not isinstance(req.data, dict) or not req.data:
+        raise HTTPException(400, "属性表需为非空对象")
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    async with _run_state_lock(run_id):
+        state = await graph.aget_state(config)
+        if not state or not state.values:
+            raise HTTPException(404, "Run not found")
+        if state.values.get("status") == "running":
+            raise HTTPException(400, "任务运行中，暂不能修改属性表")
+        await graph.aupdate_state(config, {
+            "product_attributes_draft": req.data,
+            "approved_product_attributes": req.data,
+        })
+    return {"status": "saved"}
+
+
+class RerunFromAttributesRequest(BaseModel):
+    # Optional: persist these edited attributes before re-running. When omitted,
+    # the currently-saved attributes are used as-is.
+    data: Optional[dict] = None
+
+
+@router.post("/runs/{run_id}/rerun-from-attributes")
+async def rerun_from_attributes(run_id: str, req: RerunFromAttributesRequest):
+    """Persist edited attributes (if given) and re-run the whole downstream
+    pipeline from keyword classification onward.
+
+    The attribute table feeds keyword classification, so a change there should
+    propagate through *re-classification* — not just the copy step. We reposition
+    the graph as if the attribute-review (``human_review``) just completed; its
+    conditional edge then routes to ``keyword_classify`` (keyword library present)
+    and the run continues keyword_classify → keyword_classify_review (pause for
+    review) → copywriter → st_optimize → export. Contrast with
+    ``regenerate-listing``, which only re-runs the copy step with the existing
+    classification. Refused while the run is already running.
+    """
+    from app.api._state import set_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    async with _run_state_lock(run_id):
+        state = await graph.aget_state(config)
+        if not state or not state.values:
+            raise HTTPException(404, "Run not found")
+        s = state.values
+        if s.get("status") == "running":
+            raise HTTPException(400, "任务正在运行中，请等待当前流程完成")
+        if not MemoryHelper.has(s, "keyword_library"):
+            raise HTTPException(400, "缺少关键词词库，无法重新执行后续流程")
+
+        update = {"status": "running", "pending_action": {}, "error": ""}
+        if req.data is not None:
+            if not isinstance(req.data, dict) or not req.data:
+                raise HTTPException(400, "属性表需为非空对象")
+            update["product_attributes_draft"] = req.data
+            update["approved_product_attributes"] = req.data
+
+        # Reposition as if attribute review just completed → next is
+        # keyword_classify (the conditional edge picks it when a keyword library
+        # exists). The classification review gate (interrupt_before) will pause
+        # the run again so the user can review the re-classified keywords.
+        await graph.aupdate_state(config, update, as_node="human_review")
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "accepted"}
+
+
+@router.post("/runs/{run_id}/regenerate-listing")
+async def regenerate_listing(run_id: str):
+    """Re-run only the expression layer (copywriter → st_optimize → export).
+
+    Uses the *current* state — the latest edited attribute table and classified
+    keywords, plus the live copywriter model and on-disk prompts — without
+    re-scraping or re-classifying. We reposition the graph just after the
+    keyword-classification review gate and resume, so only the copy-generation
+    tail runs again. Refused while the run is already running.
+    """
+    from app.api._state import set_run_task
+
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    async with _run_state_lock(run_id):
+        state = await graph.aget_state(config)
+        if not state or not state.values:
+            raise HTTPException(404, "Run not found")
+        s = state.values
+        if s.get("status") == "running":
+            raise HTTPException(400, "任务正在运行中，请等待当前生成完成")
+        if not MemoryHelper.has(s, "classified_keywords"):
+            raise HTTPException(400, "缺少关键词分类结果，无法重新生成文案")
+        if not (
+            MemoryHelper.has(s, "approved_product_attributes")
+            or MemoryHelper.has(s, "product_attributes_draft")
+        ):
+            raise HTTPException(400, "缺少产品属性表，无法重新生成文案")
+
+        # Reposition as if keyword_classify_review just completed → next node is
+        # copywriter. interrupt_before only fires when *entering* that node, so
+        # the resume runs straight through copywriter → st_optimize → export.
+        await graph.aupdate_state(
+            config,
+            {"status": "running", "pending_action": {}, "error": ""},
+            as_node="keyword_classify_review",
+        )
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "accepted"}
+
+
 class SubmitCaptchaRequest(BaseModel):
     answer: str
 

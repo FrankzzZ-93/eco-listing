@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Card, Button, Space, Segmented, Empty, Typography, Descriptions, Tag } from 'antd';
-import { DownloadOutlined } from '@ant-design/icons';
+import { Card, Button, Space, Segmented, Empty, Typography, Descriptions, Tag, Popconfirm, message } from 'antd';
+import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import SectionCard from './SectionCard';
 import CopyButton from './CopyButton';
 import { getByteLength, getCharLength } from '../../utils/byteCounter';
+import { downloadUrlAsFile } from '../../utils/download';
 import type { FinalOutput } from '../../types/listing';
 
 const { Text } = Typography;
@@ -11,6 +12,10 @@ const { Text } = Typography;
 interface Props {
   output: FinalOutput | null;
   loading: boolean;
+  runId?: string;
+  canRegenerate?: boolean;
+  regenerating?: boolean;
+  onRegenerate?: () => void;
 }
 
 function joinSearchTerms(terms: string[]): string {
@@ -23,7 +28,7 @@ function makeAbsolute(path: string | undefined): string | undefined {
   return path.startsWith('/') ? path : `/${path}`;
 }
 
-export default function ListingPreview({ output, loading }: Props) {
+export default function ListingPreview({ output, loading, runId, canRegenerate, regenerating, onRegenerate }: Props) {
   const [descView, setDescView] = useState<'preview' | 'source'>('preview');
 
   if (!output) {
@@ -46,6 +51,17 @@ export default function ListingPreview({ output, loading }: Props) {
 
   const mdHref = makeAbsolute(download?.markdown);
   const jsonHref = makeAbsolute(download?.json);
+  const namePrefix = runId ? `${runId}_listing` : 'final_listing';
+
+  const handleDownload = async (href: string | undefined, filename: string) => {
+    if (!href) return;
+    try {
+      // Cache-bust so a regenerated file isn't served from a stale cache.
+      await downloadUrlAsFile(`${href}?t=${Date.now()}`, filename);
+    } catch {
+      message.error('下载失败，请重试');
+    }
+  };
 
   return (
     <div>
@@ -55,12 +71,30 @@ export default function ListingPreview({ output, loading }: Props) {
         title={<Text strong>最终 Listing</Text>}
         extra={
           <Space>
+            {onRegenerate && (
+              <Popconfirm
+                title="重新生成 Listing 文案？"
+                description="将使用最新的产品属性表、关键词分类表、模型与提示词重写文案（不会重新抓取竞品）。"
+                okText="重新生成"
+                cancelText="取消"
+                disabled={!canRegenerate || regenerating}
+                onConfirm={onRegenerate}
+              >
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<ReloadOutlined />}
+                  loading={regenerating}
+                  disabled={!canRegenerate}
+                >
+                  重新生成文案
+                </Button>
+              </Popconfirm>
+            )}
             <Button
               size="small"
               icon={<DownloadOutlined />}
-              href={mdHref}
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={() => handleDownload(mdHref, `${namePrefix}.md`)}
               disabled={!mdHref}
             >
               下载 MD
@@ -68,9 +102,7 @@ export default function ListingPreview({ output, loading }: Props) {
             <Button
               size="small"
               icon={<DownloadOutlined />}
-              href={jsonHref}
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={() => handleDownload(jsonHref, `${namePrefix}.json`)}
               disabled={!jsonHref}
             >
               下载 JSON

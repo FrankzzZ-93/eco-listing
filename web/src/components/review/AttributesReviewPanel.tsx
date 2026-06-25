@@ -11,14 +11,17 @@ import {
   Spin,
   Row,
   Col,
+  Popconfirm,
   message,
 } from 'antd';
-import { CodeOutlined } from '@ant-design/icons';
+import { CodeOutlined, DownloadOutlined, SaveOutlined, ReloadOutlined } from '@ant-design/icons';
 import EditableStringList from './EditableStringList';
 import EditablePairList from './EditablePairList';
 import FullMarkdownEditor from './FullMarkdownEditor';
-import { submitReview, getRunData } from '../../api/runs';
-import type { PendingAction, MemorySnapshot } from '../../types/run';
+import { submitReview, saveAttributes, rerunFromAttributes, getRunData } from '../../api/runs';
+import { downloadJson, downloadText } from '../../utils/download';
+import { attributesToMarkdown } from '../../utils/attrMarkdown';
+import type { PendingAction, MemorySnapshot, RunStatus } from '../../types/run';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -27,6 +30,7 @@ interface Props {
   runId: string;
   pendingAction: PendingAction | null;
   memorySnapshot?: MemorySnapshot;
+  runStatus?: RunStatus;
   onReviewComplete: () => void;
 }
 
@@ -112,6 +116,7 @@ export default function AttributesReviewPanel({
   runId,
   pendingAction,
   memorySnapshot,
+  runStatus,
   onReviewComplete,
 }: Props) {
   const isPending = pendingAction?.type === 'review_product_attributes';
@@ -120,15 +125,23 @@ export default function AttributesReviewPanel({
   const [data, setData] = useState<AttrData>({});
   const [loading, setLoading] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [rerunLoading, setRerunLoading] = useState(false);
   const [rejectMode, setRejectMode] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [jsonEditorOpen, setJsonEditorOpen] = useState(false);
 
   const hasApproved = memorySnapshot?.has_approved_product_attributes;
-  // After the review has been submitted the run advances; the panel becomes a
-  // read-only view. Load the approved (edited) attributes so the user sees the
-  // content they submitted instead of the stale pre-edit draft.
-  const readOnly = !isPending;
+  // The panel is editable while paused at the review gate (isPending) and also
+  // after the run has settled (completed / paused / stopped / failed) so the
+  // user can revise the table and regenerate. It is read-only only while the
+  // graph is actively running, to avoid a mid-node write race.
+  const isRunning = runStatus === 'running' || runStatus === 'pending';
+  const canEdit = isPending || (!!hasData && !isRunning);
+  const readOnly = !canEdit;
+  // "保存并重新执行后续流程" re-runs from keyword classification, which needs a
+  // keyword library; gate the action so it isn't offered when one doesn't exist.
+  const hasKeywordLibrary = !!memorySnapshot?.has_keyword_library;
 
   useEffect(() => {
     if (isPending && pendingAction?.data && Object.keys(pendingAction.data).length > 0) {
@@ -216,6 +229,32 @@ export default function AttributesReviewPanel({
     }
   };
 
+  const handleSaveEdits = async () => {
+    setSaveLoading(true);
+    try {
+      await saveAttributes(runId, data);
+      message.success('属性表已保存');
+    } catch {
+      message.error('保存失败');
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
+  const handleSaveAndRerun = async () => {
+    setRerunLoading(true);
+    try {
+      await rerunFromAttributes(runId, data);
+      message.success('已保存并重新执行后续流程：将用新属性重新分类关键词…');
+      onReviewComplete();
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail ? `重新执行失败：${detail}` : '重新执行失败');
+    } finally {
+      setRerunLoading(false);
+    }
+  };
+
   const handleJsonSave = (content: string) => {
     try {
       const parsed = JSON.parse(content);
@@ -226,6 +265,10 @@ export default function AttributesReviewPanel({
       message.error('JSON 格式错误');
     }
   };
+
+  const exportName = `${runId}_attributes`;
+  const handleExportJson = () => downloadJson(`${exportName}.json`, data);
+  const handleExportMd = () => downloadText(`${exportName}.md`, attributesToMarkdown(data), 'text/markdown');
 
   // Uploaded tables are normalized to the canonical schema server-side, but an
   // older run or a failed conversion may carry a non-standard shape. When none
@@ -433,17 +476,38 @@ export default function AttributesReviewPanel({
         <Text strong style={{ fontSize: 16 }}>
           {isPending ? '产品属性表审核' : '产品属性表'}
         </Text>
-        {!readOnly && (
-          <Button icon={<CodeOutlined />} size="small" onClick={() => setJsonEditorOpen(true)}>
-            JSON 编辑
+        <Space size="small">
+          <Button icon={<DownloadOutlined />} size="small" onClick={handleExportJson}>
+            导出 JSON
           </Button>
-        )}
+          <Button icon={<DownloadOutlined />} size="small" onClick={handleExportMd}>
+            导出 MD
+          </Button>
+          {!readOnly && (
+            <Button icon={<CodeOutlined />} size="small" onClick={() => setJsonEditorOpen(true)}>
+              JSON 编辑
+            </Button>
+          )}
+        </Space>
       </div>
 
       {readOnly && (
         <Alert
-          message="本次审核已提交，流程已继续，属性表当前为只读视图。"
-          type="success"
+          message={
+            isRunning
+              ? '任务正在运行中，属性表当前为只读视图。'
+              : '本次审核已提交，属性表当前为只读视图。'
+          }
+          type={isRunning ? 'info' : 'success'}
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {!isPending && canEdit && (
+        <Alert
+          message="可多次编辑属性表。「保存修改」仅保存不重跑；「保存并重新执行后续流程」会用新属性重新分类关键词并依次走完后续流程（在关键词分类审核处暂停供复核）。"
+          type="info"
           showIcon
           style={{ marginBottom: 16 }}
         />
@@ -520,8 +584,39 @@ export default function AttributesReviewPanel({
             <Button danger onClick={() => setRejectMode(true)}>驳回</Button>
           </Space>
         )
+      ) : canEdit ? (
+        <Space wrap>
+          <Button
+            icon={<SaveOutlined />}
+            loading={saveLoading}
+            disabled={rerunLoading}
+            onClick={handleSaveEdits}
+          >
+            保存修改
+          </Button>
+          <Popconfirm
+            title="保存并重新执行后续流程？"
+            description="将用最新属性表重新分类关键词，并依次重跑分类→文案→ST→导出（会在关键词分类审核处暂停）。"
+            okText="重新执行"
+            cancelText="取消"
+            disabled={!hasKeywordLibrary}
+            onConfirm={handleSaveAndRerun}
+          >
+            <Button
+              type="primary"
+              icon={<ReloadOutlined />}
+              loading={rerunLoading}
+              // Re-running starts at keyword classification, which needs a
+              // keyword library; without one the backend would reject it.
+              disabled={saveLoading || !hasKeywordLibrary}
+              title={hasKeywordLibrary ? undefined : '尚无关键词词库，无法重跑后续流程'}
+            >
+              保存并重新执行后续流程
+            </Button>
+          </Popconfirm>
+        </Space>
       ) : (
-        <Text type="secondary">流程已进入下一阶段，属性表不可再修改。</Text>
+        <Text type="secondary">任务运行中，属性表暂不可修改。</Text>
       )}
 
       {!readOnly && (

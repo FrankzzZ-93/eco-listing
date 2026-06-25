@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag } from 'antd';
 import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -13,7 +13,7 @@ import ClassifiedKeywordsReviewPanel from '../components/review/ClassifiedKeywor
 import ListingPreview from '../components/output/ListingPreview';
 import CaptchaModal from '../components/common/CaptchaModal';
 import { useRunStatus } from '../hooks/useRunStatus';
-import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun } from '../api/runs';
+import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun, regenerateListing } from '../api/runs';
 import type { FinalOutput } from '../types/listing';
 
 const { Sider, Content } = Layout;
@@ -29,6 +29,16 @@ export default function RunDashboard() {
   const [finalLoading, setFinalLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [captchaLoading, setCaptchaLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+
+  const loadFinal = useCallback(() => {
+    if (!runId) return;
+    setFinalLoading(true);
+    getFinal(runId)
+      .then(setFinalOutput)
+      .catch(() => {})
+      .finally(() => setFinalLoading(false));
+  }, [runId]);
 
   const isCaptchaGate =
     run?.status === 'waiting_human' && run.pending_action?.type === 'solve_captcha';
@@ -83,18 +93,18 @@ export default function RunDashboard() {
     }
     if (run?.status === 'completed' && prev !== 'completed') {
       setActiveTab('output');
+      // Reload so a *regenerated* listing replaces the previous output (the
+      // has_final_* flags stay true across a regen, so the effect below won't
+      // re-fire on its own).
+      loadFinal();
     }
-  }, [run?.status, run?.error]);
+  }, [run?.status, run?.error, loadFinal]);
 
   useEffect(() => {
     if (run?.memory_snapshot?.has_final_listing && run?.memory_snapshot?.has_final_st) {
-      setFinalLoading(true);
-      getFinal(runId!)
-        .then(setFinalOutput)
-        .catch(() => {})
-        .finally(() => setFinalLoading(false));
+      loadFinal();
     }
-  }, [run?.memory_snapshot?.has_final_listing, run?.memory_snapshot?.has_final_st, runId]);
+  }, [run?.memory_snapshot?.has_final_listing, run?.memory_snapshot?.has_final_st, loadFinal]);
 
   const handleTabChange = (key: string) => {
     setActiveTab(key);
@@ -162,6 +172,20 @@ export default function RunDashboard() {
         }
       },
     });
+  };
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    try {
+      await regenerateListing(runId!);
+      message.success('已开始重新生成文案，使用最新属性表与关键词分类…');
+      setActiveTab('status');
+      refresh();
+    } catch (e) {
+      reportActionError('重新生成', e);
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   const handleDelete = () => {
@@ -393,6 +417,7 @@ export default function RunDashboard() {
                       runId={runId!}
                       pendingAction={run?.pending_action ?? null}
                       memorySnapshot={run?.memory_snapshot}
+                      runStatus={run?.status}
                       onReviewComplete={handleReviewComplete}
                     />
                   ),
@@ -418,6 +443,7 @@ export default function RunDashboard() {
                       runId={runId!}
                       pendingAction={run?.pending_action ?? null}
                       memorySnapshot={run?.memory_snapshot}
+                      runStatus={run?.status}
                       onReviewComplete={handleReviewComplete}
                     />
                   ),
@@ -426,7 +452,18 @@ export default function RunDashboard() {
                   key: 'output',
                   label: '最终产出',
                   children: (
-                    <ListingPreview output={finalOutput} loading={finalLoading} />
+                    <ListingPreview
+                      output={finalOutput}
+                      loading={finalLoading}
+                      runId={runId}
+                      canRegenerate={
+                        !!run?.memory_snapshot?.has_classified_keywords &&
+                        run?.status !== 'running' &&
+                        run?.status !== 'pending'
+                      }
+                      regenerating={regenerating}
+                      onRegenerate={handleRegenerate}
+                    />
                   ),
                 },
               ]}

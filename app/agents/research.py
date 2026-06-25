@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import time
-from typing import Awaitable, Callable
 
 from app import app_settings
 from app.agents.base import ToolBox
@@ -18,35 +17,68 @@ from app.tools import codex_progress
 from app.tools.file_store import to_artifact_url
 
 
-async def _scrape_all(
+async def _scrape_asin(
     run_id: str,
-    phase: str,
+    asin: str,
+    site: str,
+    browser,
+    max_review_pages: int,
+) -> dict:
+    """Scrape listing + alex + reviews for a single ASIN in sequence.
+
+    Returns a dict with keys ``listing``, ``alex``, ``reviews`` and their
+    individual durations. Raises ``CaptchaRequiredError`` if a challenge is
+    hit so the caller can pause and surface it to the UI.
+    """
+    result: dict = {}
+
+    t1 = time.time()
+    result["listing"] = await browser.scrape_listing(asin, site)
+    result["listing_ms"] = int((time.time() - t1) * 1000)
+
+    t1 = time.time()
+    result["alex"] = await browser.scrape_alex(asin, site, run_id=run_id)
+    result["alex_ms"] = int((time.time() - t1) * 1000)
+
+    t1 = time.time()
+    result["reviews"] = await browser.scrape_reviews(
+        asin, site, max_pages=max_review_pages, run_id=run_id
+    )
+    result["reviews_ms"] = int((time.time() - t1) * 1000)
+
+    return result
+
+
+async def _scrape_all_per_asin(
+    run_id: str,
     asins: list[str],
-    scrape_one: Callable[[str], Awaitable],
+    site: str,
+    browser,
+    max_review_pages: int,
     concurrency: int,
 ) -> list:
-    """Scrape a set of ASINs with bounded concurrency, reporting x/y progress.
+    """Scrape all three data types per ASIN with bounded concurrency.
 
-    Returns an ordered list of ``(asin, result, duration_ms)`` matching the
-    input ``asins`` order so callers can build deterministic logs. Progress is
-    pushed to ``codex_progress`` after each scrape completes.
+    Each worker handles one ASIN end-to-end (listing → alex → reviews) before
+    the next ASIN starts within that slot, so data is collected in ASIN units
+    rather than phase sweeps. Progress counter ticks once per completed ASIN.
+
+    Returns an ordered list of ``(asin, result_dict)`` preserving input order.
+    Raises ``CaptchaRequiredError`` from the first ASIN that hits a captcha.
     """
     total = len(asins)
     sem = asyncio.Semaphore(max(1, concurrency))
     done = 0
-    codex_progress.set_scrape(run_id, phase, 0, total)
+    codex_progress.set_scrape(run_id, "per_asin", 0, total)
     results: list = [None] * total
 
     async def worker(i: int, asin: str) -> None:
         nonlocal done
         async with sem:
-            t1 = time.time()
-            res = await scrape_one(asin)
-            dur = int((time.time() - t1) * 1000)
-        # Single event loop → plain increment is safe (no preemption mid-stmt).
+            res = await _scrape_asin(run_id, asin, site, browser, max_review_pages)
         done += 1
-        codex_progress.set_scrape(run_id, phase, done, total)
-        results[i] = (asin, res, dur)
+        codex_progress.set_scrape(run_id, "per_asin", done, total)
+        results[i] = (asin, res)
 
     await asyncio.gather(*(worker(i, a) for i, a in enumerate(asins)))
     return results
@@ -88,28 +120,68 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
         site = state.get("site", "amazon.com")
         competitor_asins = state.get("competitor_asins", [])
 
-        # --- Phase 1: Competitor Listings ---
+        # Restore any data already collected in a previous (interrupted) run.
         listings = list(state.get("competitor_listings", []))
+        alex_qs = list(state.get("alex_questions") or state.get("rufus_questions") or [])
+        reviews = list(state.get("customer_reviews", []))
 
-        if not listings and competitor_asins and toolbox.browser:
-            scraped = await _scrape_all(
-                run_id,
-                "competitor_listings",
-                competitor_asins,
-                lambda a: toolbox.browser.scrape_listing(a, site),
-                concurrency,
-            )
-            for asin, result, dur in scraped:
-                listings.append(result)
-                logs.append(
-                    MemoryHelper.log_action(
-                        "research",
-                        "scrape_listing",
-                        asin=asin,
-                        has_error="error" in result,
-                        duration_ms=dur,
-                    )
+        # --- Per-ASIN scrape: listing → alex → reviews in one pass per ASIN ---
+        # Each worker handles one ASIN end-to-end before moving to the next.
+        # Only runs when none of the three buckets have data (idempotent on resume).
+        if not listings and not alex_qs and not reviews and competitor_asins and toolbox.browser:
+            try:
+                scraped = await _scrape_all_per_asin(
+                    run_id,
+                    competitor_asins,
+                    site,
+                    toolbox.browser,
+                    max_review_pages,
+                    concurrency,
                 )
+            except CaptchaRequiredError as e:
+                return {
+                    "competitor_listings": listings,
+                    "alex_questions": alex_qs,
+                    "customer_reviews": reviews,
+                    "status": "waiting_human",
+                    "pending_action": {
+                        "type": "solve_captcha",
+                        "context": e.context,
+                        "image_url": to_artifact_url(e.image_path),
+                        "message": str(e),
+                    },
+                    "agent_log": logs + [
+                        MemoryHelper.log_action("research", "captcha_required", context=e.context)
+                    ],
+                }
+
+            for asin, res in scraped:
+                listings.append(res["listing"])
+                logs.append(MemoryHelper.log_action(
+                    "research", "scrape_listing",
+                    asin=asin,
+                    has_error="error" in res["listing"],
+                    duration_ms=res["listing_ms"],
+                ))
+
+                questions = res["alex"].get("questions", [])
+                alex_qs.extend(questions)
+                logs.append(MemoryHelper.log_action(
+                    "research", "scrape_alex",
+                    asin=asin,
+                    question_count=len(questions),
+                    has_error="error" in res["alex"],
+                    duration_ms=res["alex_ms"],
+                ))
+
+                asin_reviews = res["reviews"] if isinstance(res["reviews"], list) else []
+                reviews.extend(asin_reviews)
+                logs.append(MemoryHelper.log_action(
+                    "research", "scrape_reviews",
+                    asin=asin,
+                    review_count=len(asin_reviews),
+                    duration_ms=res["reviews_ms"],
+                ))
 
         if not listings:
             return {
@@ -120,51 +192,6 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
                 },
                 "agent_log": [MemoryHelper.log_action("research", "waiting_upload")],
             }
-
-        # --- Phase 2: Alex Q&A (from each competitor) ---
-        # Read alex_*; fall back to legacy rufus_* keys for older runs.
-        alex_qs = list(state.get("alex_questions") or state.get("rufus_questions") or [])
-
-        if not alex_qs and competitor_asins and toolbox.browser:
-            try:
-                scraped = await _scrape_all(
-                    run_id,
-                    "alex",
-                    competitor_asins,
-                    lambda a: toolbox.browser.scrape_alex(a, site, run_id=run_id),
-                    concurrency,
-                )
-            except CaptchaRequiredError as e:
-                # browser-act session parked on the challenge — pause and surface it.
-                return {
-                    "competitor_listings": listings,
-                    "status": "waiting_human",
-                    "pending_action": {
-                        "type": "solve_captcha",
-                        "context": e.context,
-                        "image_url": to_artifact_url(e.image_path),
-                        "message": str(e),
-                    },
-                    "agent_log": logs
-                    + [
-                        MemoryHelper.log_action(
-                            "research", "captcha_required", context=e.context
-                        )
-                    ],
-                }
-            for asin, alex_result, dur in scraped:
-                questions = alex_result.get("questions", [])
-                alex_qs.extend(questions)
-                logs.append(
-                    MemoryHelper.log_action(
-                        "research",
-                        "scrape_alex",
-                        asin=asin,
-                        question_count=len(questions),
-                        has_error="error" in alex_result,
-                        duration_ms=dur,
-                    )
-                )
 
         # Also try Alex screenshots (legacy path / manual fallback)
         screenshots = state.get("alex_screenshots") or state.get("rufus_screenshots") or []
@@ -185,53 +212,6 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
                         "research",
                         "extract_alex_screenshot",
                         duration_ms=int((time.time() - t1) * 1000),
-                    )
-                )
-
-        # --- Phase 3: Customer Reviews (from each competitor) ---
-        reviews = list(state.get("customer_reviews", []))
-
-        if not reviews and competitor_asins and toolbox.browser:
-            try:
-                scraped = await _scrape_all(
-                    run_id,
-                    "reviews",
-                    competitor_asins,
-                    lambda a: toolbox.browser.scrape_reviews(
-                        a, site, max_pages=max_review_pages, run_id=run_id
-                    ),
-                    concurrency,
-                )
-            except CaptchaRequiredError as e:
-                # The browser-act session is parked on the verification page.
-                # Pause the run and surface the challenge to the UI; on resume,
-                # already-collected listings/Alex are skipped and reviews retry.
-                return {
-                    "competitor_listings": listings,
-                    "alex_questions": alex_qs,
-                    "status": "waiting_human",
-                    "pending_action": {
-                        "type": "solve_captcha",
-                        "context": e.context,
-                        "image_url": to_artifact_url(e.image_path),
-                        "message": str(e),
-                    },
-                    "agent_log": logs
-                    + [
-                        MemoryHelper.log_action(
-                            "research", "captcha_required", context=e.context
-                        )
-                    ],
-                }
-            for asin, asin_reviews, dur in scraped:
-                reviews.extend(asin_reviews)
-                logs.append(
-                    MemoryHelper.log_action(
-                        "research",
-                        "scrape_reviews",
-                        asin=asin,
-                        review_count=len(asin_reviews),
-                        duration_ms=dur,
                     )
                 )
 

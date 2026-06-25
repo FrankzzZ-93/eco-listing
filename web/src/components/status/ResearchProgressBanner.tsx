@@ -4,6 +4,9 @@ import type { ResearchProgress } from '../../types/run';
 const { Text } = Typography;
 
 const PHASE_LABELS: Record<string, string> = {
+  // Current per-ASIN scrape (listing + Alex + reviews collected per competitor).
+  per_asin: '竞品数据',
+  // Legacy phase-sweep labels (kept for older in-flight runs).
   competitor_listings: '竞品 Listing',
   alex: 'Alex 问答',
   reviews: '评论',

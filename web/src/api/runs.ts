@@ -57,6 +57,20 @@ export async function submitClassifiedReview(
   });
 }
 
+export async function saveAttributes(runId: string, data: Record<string, unknown>): Promise<void> {
+  await client.put(`/runs/${runId}/attributes`, { data });
+}
+
+// Persist edited attributes (optional) and re-run the downstream pipeline from
+// keyword classification onward (re-classify → review → copywriter → … → export).
+export async function rerunFromAttributes(runId: string, data?: Record<string, unknown>): Promise<void> {
+  await client.post(`/runs/${runId}/rerun-from-attributes`, data ? { data } : {});
+}
+
+export async function regenerateListing(runId: string): Promise<void> {
+  await client.post(`/runs/${runId}/regenerate-listing`);
+}
+
 export async function pauseRun(runId: string): Promise<void> {
   await client.post(`/runs/${runId}/pause`);
 }

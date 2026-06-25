@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Table, Button, Card, Alert, Input, Space, Tag, Popconfirm, message, Typography, Select, Modal, Form, InputNumber } from 'antd';
-import { DeleteOutlined, SearchOutlined, SaveOutlined, PlusOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { DeleteOutlined, SearchOutlined, SaveOutlined, PlusOutlined, CheckCircleOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { getRunData, submitClassifiedReview } from '../../api/runs';
-import type { PendingAction, MemorySnapshot } from '../../types/run';
+import { downloadJson, downloadText, rowsToCsv } from '../../utils/download';
+import type { PendingAction, MemorySnapshot, RunStatus } from '../../types/run';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -36,6 +37,7 @@ interface Props {
   runId: string;
   pendingAction: PendingAction | null;
   memorySnapshot?: MemorySnapshot;
+  runStatus?: RunStatus;
   onReviewComplete: () => void;
 }
 
@@ -67,13 +69,14 @@ function flatten(raw: Record<string, unknown>): ClassifiedRow[] {
   return rows;
 }
 
-export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, memorySnapshot, onReviewComplete }: Props) {
+export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, memorySnapshot, runStatus, onReviewComplete }: Props) {
   const isReviewing = pendingAction?.type === 'review_classified_keywords';
   const hasData = memorySnapshot?.has_classified_keywords;
-  // Editing (and the save/approve buttons) is only meaningful while the run is
-  // paused at the classification review gate. Outside that, the panel is a
-  // read-only view (consistent with the attributes review panel).
-  const editable = isReviewing;
+  // Editable while paused at the review gate (isReviewing) and also after the
+  // run has settled, so the user can revise the classification and regenerate.
+  // Read-only only while the graph is actively running.
+  const isRunning = runStatus === 'running' || runStatus === 'pending';
+  const editable = isReviewing || (!!hasData && !isRunning);
 
   const [rows, setRows] = useState<ClassifiedRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -194,12 +197,35 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
       // Keep the new rows as canonical so they aren't recomputed away, and
       // refresh the metadata baseline used for the next round-trip.
       originalRef.current = buildPayload();
-      message.success('已保存，可继续修改或点击「保存后通过」进入下一步');
+      message.success(
+        isReviewing
+          ? '已保存，可继续修改或点击「保存后通过」进入下一步'
+          : '分类表已保存，可在「最终产出」点击「重新生成文案」应用最新分类',
+      );
     } catch {
       message.error('保存失败');
     } finally {
       setSaveLoading(false);
     }
+  };
+
+  const exportName = `${runId}_classified_keywords`;
+  const handleExportJson = () => downloadJson(`${exportName}.json`, buildPayload());
+  const handleExportCsv = () => {
+    const csv = rowsToCsv(
+      rows as unknown as Record<string, unknown>[],
+      [
+        { key: 'keyword', label: '关键词' },
+        { key: 'translation', label: '翻译' },
+        { key: 'search_volume', label: '周搜索量' },
+        { key: 'bid_price', label: 'CPC竞价($)' },
+        { key: 'conversion_rate', label: '点击转化率(%)' },
+        { key: 'category', label: '分类' },
+        { key: 'rationale', label: '分类依据说明' },
+        { key: 'usage', label: '推荐使用位置' },
+      ],
+    );
+    downloadText(`${exportName}.csv`, csv, 'text/csv');
   };
 
   const handleApprove = async () => {
@@ -360,6 +386,12 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
             style={{ width: 220 }}
             allowClear
           />
+          <Button icon={<DownloadOutlined />} onClick={handleExportJson}>
+            导出 JSON
+          </Button>
+          <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
+            导出 CSV
+          </Button>
           {editable && (
             <Button type="primary" ghost icon={<PlusOutlined />} onClick={handleAdd}>
               新增
@@ -420,6 +452,17 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
           </Space>
           <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
             「保存」仅暂存编辑，停留在审核；「保存后通过」后才会开始撰写 Listing。
+          </Text>
+        </div>
+      )}
+
+      {!isReviewing && editable && (
+        <div style={{ marginTop: 16 }}>
+          <Button type="primary" icon={<SaveOutlined />} loading={saveLoading} onClick={handleSave}>
+            保存修改
+          </Button>
+          <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
+            修改后保存，再到「最终产出」点击「重新生成文案」即可用最新分类重写 Listing。
           </Text>
         </div>
       )}

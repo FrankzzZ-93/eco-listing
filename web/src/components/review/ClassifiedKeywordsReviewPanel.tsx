@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Table, Button, Card, Alert, Input, Space, Tag, Popconfirm, message, Typography, Select, Modal, Form, InputNumber } from 'antd';
-import { DeleteOutlined, SearchOutlined, SaveOutlined, PlusOutlined, CheckCircleOutlined, DownloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, SearchOutlined, SaveOutlined, PlusOutlined, CheckCircleOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { getRunData, submitClassifiedReview } from '../../api/runs';
+import { getRunData, submitClassifiedReview, regenerateListing } from '../../api/runs';
 import { downloadJson, downloadText, rowsToCsv } from '../../utils/download';
 import type { PendingAction, MemorySnapshot, RunStatus } from '../../types/run';
 
@@ -82,6 +82,7 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
   const [loading, setLoading] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [approveLoading, setApproveLoading] = useState(false);
+  const [rerunLoading, setRerunLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -238,6 +239,26 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
       message.error('提交失败');
     } finally {
       setApproveLoading(false);
+    }
+  };
+
+  // Post-completion: persist the edited classification, then re-run the
+  // downstream steps (copywriter → ST → export) with it. The classification
+  // change only affects copy generation, so we reuse regenerate-listing
+  // (reposition at the classify-review gate) rather than re-classifying.
+  const handleSaveAndRerun = async () => {
+    setRerunLoading(true);
+    try {
+      await submitClassifiedReview(runId, buildPayload(), false);
+      originalRef.current = buildPayload();
+      await regenerateListing(runId);
+      message.success('已保存并重新执行后续流程：用最新分类重写 Listing…');
+      onReviewComplete();
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail ? `重新执行失败：${detail}` : '重新执行失败');
+    } finally {
+      setRerunLoading(false);
     }
   };
 
@@ -458,11 +479,29 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
 
       {!isReviewing && editable && (
         <div style={{ marginTop: 16 }}>
-          <Button type="primary" icon={<SaveOutlined />} loading={saveLoading} onClick={handleSave}>
-            保存修改
-          </Button>
+          <Space wrap>
+            <Button
+              icon={<SaveOutlined />}
+              loading={saveLoading}
+              disabled={rerunLoading}
+              onClick={handleSave}
+            >
+              保存修改
+            </Button>
+            <Popconfirm
+              title="保存并重新执行后续流程？"
+              description="将用最新分类重跑：文案生成 → ST 优化 → 导出（不会重新抓取或重新分类）。"
+              okText="重新执行"
+              cancelText="取消"
+              onConfirm={handleSaveAndRerun}
+            >
+              <Button type="primary" icon={<ReloadOutlined />} loading={rerunLoading} disabled={saveLoading}>
+                保存并重新执行后续流程
+              </Button>
+            </Popconfirm>
+          </Space>
           <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
-            修改后保存，再到「最终产出」点击「重新生成文案」即可用最新分类重写 Listing。
+            「保存修改」仅保存；「保存并重新执行后续流程」会用最新分类重写 Listing。
           </Text>
         </div>
       )}

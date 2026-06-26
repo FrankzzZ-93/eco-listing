@@ -109,6 +109,14 @@ def _enforce_limits(listing: dict, limits: dict) -> tuple[dict, list[str]]:
         desc = _trim_description(desc, limits["description_max_chars"])
         notes.append(f"Description 硬裁剪至 ≤ {limits['description_max_chars']} 字符")
 
+    # Last-resort: never ship an empty bullet (an empty "•"). The retry loop
+    # should produce 5 complete bullets, but if one slips through empty, drop it
+    # rather than render a blank line.
+    non_empty_bullets = [b for b in bullets if str(b).strip()]
+    if len(non_empty_bullets) != len(bullets):
+        notes.append(f"剔除 {len(bullets) - len(non_empty_bullets)} 条空五点")
+        bullets = non_empty_bullets
+
     corrected = {**listing, "title": title, "bullet_points": bullets, "description": desc}
     return corrected, notes
 

@@ -78,6 +78,7 @@
 ### Bullet Points 审查（逐条，严禁合并审查）
 - 每条字符长度 ≤ {{ bullet_max_chars }}
 - 🔴 **五点合计硬上限**：五条 Bullet 用换行符（\n）连接后的 UTF-8 字节数必须 ≤ {{ bullets_total_max_bytes }} 字节（英文字母/数字/空格=1 字节，非 ASCII 字符=2 字节）。这是平台后台的绑定约束，**即使每条都未超 {{ bullet_max_chars }} 字符，合计超 {{ bullets_total_max_bytes }} 字节也算违规**，必须精简措辞至合计不超限
+- 🔴 **必须正好 5 条、条条完整非空、均衡分配**：五点必须是 **5 条**，每条都是**完整句子**——不得截断、不得以逗号或连词（and/or/with/the/to 等）收尾、不得出现空白条。要在 {{ bullets_total_max_bytes }} 字节总预算内**均衡分配到 5 条**，每条约 {{ bullets_total_max_bytes }} ÷ 5 字节（约 150-200 字节）。**严禁把字节堆在前几条而让后面的被挤截断或留空**；若内容放不下，就把每条都写得更精炼，**绝不牺牲条数或句子完整性**
 - Header 格式规范（全大写短语开头）
 - 违禁词全量扫描
 - 需证明文件的宣称词
@@ -221,6 +222,7 @@
 - 标题 ≤ {{ title_max_chars }} 字符
 - 每条 Bullet ≤ {{ bullet_max_chars }} 字符
 - **五点描述合计 ≤ {{ bullets_total_max_bytes }} 字节（换行连接，UTF-8 计字节）**
+- **五点正好 5 条：每条非空、为完整句子、不以逗号或连词结尾，字节均衡分配（每条约 {{ bullets_total_max_bytes }} ÷ 5）**
 - **Description ≤ {{ description_max_chars }} 字符（含 HTML）**
 - ST < {{ st_max_bytes }} bytes，无竞品品牌词，无单字母 token
 - Description 仅使用白名单 HTML 标签

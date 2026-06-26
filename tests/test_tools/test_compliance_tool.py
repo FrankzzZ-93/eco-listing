@@ -12,7 +12,14 @@ class TestComplianceValidate:
         # path in isolation.
         listing = {
             "title": "Premium Widget for Home Use",
-            "bullet_points": ["Feature 1", "Feature 2"],
+            # 5 complete, non-empty bullets (the pipeline always ships 5).
+            "bullet_points": [
+                "DURABLE BUILD made to last.",
+                "EASY SETUP in minutes.",
+                "VERSATILE for home and office.",
+                "COMPACT design saves space.",
+                "RELIABLE everyday performance.",
+            ],
             "description": "A great product for daily use.",
         }
         no_soft_minimums = {

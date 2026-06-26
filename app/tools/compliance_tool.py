@@ -8,6 +8,13 @@ from app.tools.keyword_tool import ASIN_RE
 
 
 class ComplianceTool:
+    # Words a complete bullet should not end on — a trailing one signals the
+    # sentence was truncated mid-phrase.
+    _DANGLING_TAIL = frozenset({
+        "and", "or", "with", "the", "a", "an", "to", "for", "of", "in", "on",
+        "that", "your", "this", "these", "as", "at", "by",
+    })
+
     FORBIDDEN_WORDS = [
         "best",
         "cheapest",
@@ -72,6 +79,27 @@ class ComplianceTool:
         for i, bp in enumerate(bullets):
             if len(bp) > max_bullet:
                 violations.append(f"Bullet #{i + 1} 超长: {len(bp)} > {max_bullet} 字符")
+
+        # Completeness: ship exactly 5 non-empty bullets, each a complete
+        # sentence. A model squeezing into the byte budget can leave a bullet
+        # empty or truncate it mid-phrase (dangling comma / conjunction); catch
+        # that so the round-3 retry loop regenerates instead of shipping it.
+        non_empty = [str(b).strip() for b in bullets if str(b).strip()]
+        if len(non_empty) != 5:
+            violations.append(
+                f"五点描述必须为 5 条完整非空，当前非空 {len(non_empty)} 条"
+                f"（请均衡分配，每条都是完整句子）"
+            )
+        for i, bp in enumerate(bullets):
+            s = str(bp).strip()
+            if not s:
+                continue
+            last_word = s.rstrip(".!?:;").split()[-1].lower() if s.rstrip(".!?:;").split() else ""
+            if s.endswith((",", "，")) or last_word in self._DANGLING_TAIL:
+                violations.append(
+                    f"Bullet #{i + 1} 句子未完整（以逗号或连词结尾），请补全为完整句"
+                )
+
         # Total bullets byte budget (binding UI constraint). Match the UI's
         # measurement: join the five bullets with newlines, count UTF-8 bytes.
         bullets_bytes = len("\n".join(str(b) for b in bullets).encode("utf-8"))

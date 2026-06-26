@@ -71,6 +71,19 @@ export async function regenerateListing(runId: string): Promise<void> {
   await client.post(`/runs/${runId}/regenerate-listing`);
 }
 
+export async function updateProductName(runId: string, productName: string): Promise<void> {
+  await client.put(`/runs/${runId}/product-name`, { product_name: productName });
+}
+
+// Replace the keyword library with a new file and re-run classification → listing.
+export async function rerunFromKeywords(runId: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append('file', file);
+  await client.post(`/runs/${runId}/rerun-from-keywords`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+}
+
 export async function pauseRun(runId: string): Promise<void> {
   await client.post(`/runs/${runId}/pause`);
 }

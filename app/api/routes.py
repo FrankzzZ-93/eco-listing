@@ -274,6 +274,7 @@ async def get_run(run_id: str):
 
     return {
         "run_id": run_id,
+        "product_name": snapshot.get("product_name", "") or "",
         "status": effective_status,
         "current_agent": current_agent,
         "next_step": list(next_nodes) if next_nodes else None,
@@ -478,6 +479,83 @@ async def regenerate_listing(run_id: str):
     task = asyncio.create_task(_resume_graph(run_id))
     set_run_task(run_id, task)
     return {"status": "accepted"}
+
+
+class UpdateProductNameRequest(BaseModel):
+    product_name: str
+
+
+@router.put("/runs/{run_id}/product-name")
+async def update_product_name(run_id: str, req: UpdateProductNameRequest):
+    """Rename a run (the user-facing label shown in the run list / dashboard)."""
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+    await graph.aupdate_state(config, {"product_name": (req.product_name or "").strip()})
+    return {"status": "saved"}
+
+
+@router.post("/runs/{run_id}/rerun-from-keywords")
+async def rerun_from_keywords(run_id: str, file: UploadFile = File(...)):
+    """Replace the keyword library with an uploaded file and re-run the semantic +
+    expression layers: keyword_classify → review → copywriter → st_optimize →
+    export. Lets a finished run be refreshed with new traffic words (e.g. as the
+    competitive landscape shifts) without re-scraping competitors or re-analyzing
+    product attributes. Refused while the run is already running.
+    """
+    from app.api._state import set_run_task
+
+    graph = _get_graph()
+    toolbox = _get_toolbox()
+    config = {"configurable": {"thread_id": run_id}}
+    content = await file.read()
+
+    fname = (file.filename or "").lower()
+    if fname.endswith(".xlsx"):
+        cleaned = toolbox.keyword.clean(content)
+    elif fname.endswith(".json"):
+        try:
+            cleaned = toolbox.keyword.clean(json.loads(content))
+        except json.JSONDecodeError:
+            raise HTTPException(400, "关键词词库 JSON 解析失败")
+    else:
+        raise HTTPException(400, "关键词词库请上传 .xlsx 或 .json 文件")
+
+    if not cleaned:
+        raise HTTPException(400, "关键词词库为空或无法解析")
+
+    async with _run_state_lock(run_id):
+        state = await graph.aget_state(config)
+        if not state or not state.values:
+            raise HTTPException(404, "Run not found")
+        s = state.values
+        if s.get("status") == "running":
+            raise HTTPException(400, "任务正在运行中，请等待当前流程完成")
+        if not (
+            MemoryHelper.has(s, "approved_product_attributes")
+            or MemoryHelper.has(s, "product_attributes_draft")
+        ):
+            raise HTTPException(400, "缺少产品属性表，无法重新分类")
+
+        # Reposition as if attribute review just completed → the conditional edge
+        # routes to keyword_classify (a keyword library now exists). Re-classify
+        # with the new library, pause at the classification review, then
+        # copywriter → st_optimize → export.
+        await graph.aupdate_state(
+            config,
+            {
+                "keyword_library": cleaned,
+                "status": "running",
+                "pending_action": {},
+                "error": "",
+            },
+            as_node="human_review",
+        )
+    task = asyncio.create_task(_resume_graph(run_id))
+    set_run_task(run_id, task)
+    return {"status": "accepted", "keywords_count": len(cleaned)}
 
 
 class SubmitCaptchaRequest(BaseModel):

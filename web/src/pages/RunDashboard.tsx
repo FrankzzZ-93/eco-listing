@@ -13,7 +13,7 @@ import ClassifiedKeywordsReviewPanel from '../components/review/ClassifiedKeywor
 import ListingPreview from '../components/output/ListingPreview';
 import CaptchaModal from '../components/common/CaptchaModal';
 import { useRunStatus } from '../hooks/useRunStatus';
-import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun, regenerateListing } from '../api/runs';
+import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun, regenerateListing, updateProductName } from '../api/runs';
 import type { FinalOutput } from '../types/listing';
 
 const { Sider, Content } = Layout;
@@ -174,6 +174,16 @@ export default function RunDashboard() {
     });
   };
 
+  const handleRenameProduct = async (name: string) => {
+    try {
+      await updateProductName(runId!, name.trim());
+      message.success('产品名称已更新');
+      refresh();
+    } catch {
+      message.error('产品名称更新失败');
+    }
+  };
+
   const handleRegenerate = async () => {
     setRegenerating(true);
     try {
@@ -222,13 +232,27 @@ export default function RunDashboard() {
   return (
     <div>
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Button
-          type="text"
-          icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/new')}
-        >
-          返回
-        </Button>
+        <Space align="center">
+          <Button
+            type="text"
+            icon={<ArrowLeftOutlined />}
+            onClick={() => navigate('/new')}
+          >
+            返回
+          </Button>
+          <Text
+            strong
+            style={{ fontSize: 16 }}
+            editable={{
+              text: run?.product_name || '',
+              tooltip: '点击修改产品名称（方便复用记录）',
+              onChange: handleRenameProduct,
+            }}
+          >
+            {run?.product_name || '未命名'}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{runId}</Text>
+        </Space>
         <Space>
           {run?.status === 'running' && (
             <Button
@@ -457,6 +481,7 @@ export default function RunDashboard() {
                       runId={runId!}
                       pendingAction={run?.pending_action ?? null}
                       memorySnapshot={run?.memory_snapshot}
+                      runStatus={run?.status}
                       onReviewComplete={handleReviewComplete}
                       onUploaded={refresh}
                     />

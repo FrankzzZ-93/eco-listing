@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Table, Card, Alert, Input, Space, Tag, message, Typography, Upload } from 'antd';
-import { SearchOutlined, InboxOutlined } from '@ant-design/icons';
+import { Table, Card, Alert, Input, Space, Tag, message, Typography, Upload, Button } from 'antd';
+import { SearchOutlined, InboxOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { getRunData, uploadFile } from '../../api/runs';
-import type { PendingAction, MemorySnapshot } from '../../types/run';
+import { getRunData, uploadFile, rerunFromKeywords } from '../../api/runs';
+import type { PendingAction, MemorySnapshot, RunStatus } from '../../types/run';
 
 const { Dragger } = Upload;
 
@@ -21,21 +21,26 @@ interface Props {
   runId: string;
   pendingAction: PendingAction | null;
   memorySnapshot?: MemorySnapshot;
+  runStatus?: RunStatus;
   onReviewComplete: () => void;
   onUploaded?: () => void;
 }
 
 // The keyword library is always user-provided, so there is no review gate: once
-// uploaded the run auto-proceeds to classification. This panel therefore only
-// (a) collects the upload when the library is missing, and (b) shows a
-// read-only view of the uploaded library for reference.
-export default function KeywordReviewPanel({ runId, memorySnapshot, onUploaded }: Props) {
+// uploaded the run auto-proceeds to classification. This panel therefore
+// (a) collects the upload when the library is missing, (b) shows a read-only
+// view of the uploaded library, and (c) once the run has settled, lets the user
+// re-upload a fresh library to re-classify + re-write the listing (reuse a
+// finished record when traffic words change).
+export default function KeywordReviewPanel({ runId, memorySnapshot, runStatus, onReviewComplete, onUploaded }: Props) {
   const hasData = memorySnapshot?.has_keyword_library;
+  const isRunning = runStatus === 'running' || runStatus === 'pending';
 
   const [keywords, setKeywords] = useState<KeywordItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -47,6 +52,20 @@ export default function KeywordReviewPanel({ runId, memorySnapshot, onUploaded }
       message.error('上传失败，请确认文件为 .xlsx / .json 格式');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleReupload = async (file: File) => {
+    setRerunning(true);
+    try {
+      await rerunFromKeywords(runId, file);
+      message.success('已上传新词库，正在重新分类并重写 Listing…');
+      onReviewComplete();
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail ? `重新执行失败：${detail}` : '重新执行失败，请确认文件为 .xlsx / .json');
+    } finally {
+      setRerunning(false);
     }
   };
 
@@ -166,6 +185,43 @@ export default function KeywordReviewPanel({ runId, memorySnapshot, onUploaded }
         showIcon
         style={{ marginBottom: 16 }}
       />
+
+      {!isRunning && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="更新流量词，重跑后续流程"
+          description={
+            <div>
+              <div style={{ marginBottom: 8 }}>
+                竞争态势变化后，下载最新流量词上传到这里，即可用新词库
+                <b>重新分类 → 重写 Listing</b>（保留本条记录，不必从头跑；会在分类审核处暂停供复核）。
+              </div>
+              <Dragger
+                accept=".xlsx,.json"
+                multiple={false}
+                showUploadList={false}
+                disabled={rerunning}
+                beforeUpload={(file) => {
+                  handleReupload(file);
+                  return false;
+                }}
+                style={{ padding: '8px 0' }}
+              >
+                <p style={{ margin: 0 }}>
+                  <Button type="primary" icon={<ReloadOutlined />} loading={rerunning}>
+                    {rerunning ? '上传中…' : '上传新词库并重新执行'}
+                  </Button>
+                </p>
+                <p className="ant-upload-hint" style={{ fontSize: 12, marginTop: 8 }}>
+                  点击或拖拽 .xlsx / .json 词库文件
+                </p>
+              </Dragger>
+            </div>
+          }
+        />
+      )}
 
       <Table
         columns={columns}

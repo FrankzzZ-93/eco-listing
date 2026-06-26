@@ -60,6 +60,7 @@ export interface ResearchProgress {
 
 export interface RunDetail {
   run_id: string;
+  product_name?: string;
   status: RunStatus;
   current_agent: AgentName | null;
   memory_snapshot: MemorySnapshot;

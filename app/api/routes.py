@@ -622,7 +622,15 @@ async def stop_run(run_id: str):
 
 @router.delete("/runs/{run_id}")
 async def delete_run(run_id: str):
-    """Delete a run from the registry."""
+    """Stop (if running) and permanently delete a run.
+
+    Removes both the registry entry AND the LangGraph checkpoint thread. Purging
+    the checkpoint is required now that startup reconciliation backfills the
+    registry from checkpoints — otherwise a deleted run would reappear on the
+    next restart.
+    """
+    import logging
+
     from app.api._state import get_run_meta, get_run_task, remove_run_task, remove_run
 
     meta = get_run_meta(run_id)
@@ -635,6 +643,15 @@ async def delete_run(run_id: str):
     remove_run_task(run_id)
 
     remove_run(run_id)
+
+    # Purge the checkpoint so the run is truly gone (and can't be reconciled back).
+    try:
+        await _get_graph().checkpointer.adelete_thread(run_id)
+    except Exception:
+        logging.getLogger("eco_listing").warning(
+            "Failed to purge checkpoint for deleted run %s", run_id, exc_info=True
+        )
+
     return {"status": "deleted"}
 
 

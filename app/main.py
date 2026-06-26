@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
         load_app_settings()
 
         _state.load_registry()
+        await _reconcile_registry(graph)
         await _recover_stale_runs(graph)
 
         yield
@@ -56,14 +57,78 @@ async def lifespan(app: FastAPI):
     await browser.close()
 
 
+def _created_at_from_run_id(run_id: str) -> str:
+    """Best-effort creation time for a reconciled run, parsed from its id
+    (``run_YYYYMMDD_xxxxxx``); falls back to now when it doesn't match."""
+    import datetime
+    import re
+
+    m = re.match(r"run_(\d{4})(\d{2})(\d{2})_", run_id)
+    if m:
+        try:
+            y, mo, d = (int(g) for g in m.groups())
+            return datetime.datetime(y, mo, d, tzinfo=datetime.timezone.utc).isoformat()
+        except ValueError:
+            pass
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+async def _reconcile_registry(graph):
+    """Backfill the run registry from surviving checkpoints.
+
+    The registry (run_registry.json) is a lightweight index that drives the run
+    list; the authoritative per-run state lives in the checkpoint DB. They can
+    desync (e.g. the index is reset/emptied while checkpoints keep accumulating),
+    which makes the UI list go blank even though no data was lost. On startup we
+    reconcile: any checkpoint thread missing from the registry is re-added with
+    metadata read back from its state. Idempotent and self-healing.
+    """
+    import logging
+
+    logger = logging.getLogger("eco_listing")
+
+    thread_ids = _state.checkpoint_thread_ids(settings.checkpoint_db)
+    new_entries: list[dict] = []
+    for tid in thread_ids:
+        if _state.has_run(tid):
+            continue
+        try:
+            state = await graph.aget_state({"configurable": {"thread_id": tid}})
+            if not state or not state.values:
+                continue
+            v = state.values
+            new_entries.append({
+                "run_id": tid,
+                # product_name isn't part of graph state, so it can't be
+                # recovered — left blank (matches runs created without one).
+                "product_name": "",
+                "site": v.get("site", "amazon.com"),
+                "competitor_asins": v.get("competitor_asins", []),
+                "created_at": _created_at_from_run_id(tid),
+            })
+        except Exception:
+            logger.warning("Failed to reconcile run %s", tid, exc_info=True)
+
+    added = _state.register_runs_bulk(new_entries)
+    if added:
+        logger.warning("Reconciled %d run(s) into the registry from checkpoints", added)
+
+
 async def _recover_stale_runs(graph):
-    """On startup, resume any runs stuck in 'running' with no live task."""
+    """On startup, resume only runs left mid-execution (status 'running') with
+    no live task.
+
+    Restricted to ``running`` on purpose: a ``pending`` run was created but never
+    started by the user, and terminal runs (completed/failed/stopped) are done —
+    none of those should auto-start. This matters now that the registry is
+    reconciled from checkpoints (see _reconcile_registry), which re-surfaces such
+    runs; without this guard a reconciled ``pending`` run would scrape on boot.
+    """
     import asyncio
     import logging
     from app.api._state import list_runs, get_run_task, set_run_task
 
     logger = logging.getLogger("eco_listing")
-    terminal_statuses = {"completed", "failed", "stopped"}
 
     for meta in list_runs():
         run_id = meta["run_id"]
@@ -81,7 +146,7 @@ async def _recover_stale_runs(graph):
             next_nodes = state.next if state.next else ()
             waiting_nodes = {"wait_upload", "wait_verify", "human_review", "keyword_upload", "keyword_classify_review"}
 
-            if status in terminal_statuses:
+            if status != "running":
                 continue
             if any(n in next_nodes for n in waiting_nodes):
                 continue

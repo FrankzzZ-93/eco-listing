@@ -201,21 +201,22 @@ function ActiveRunCard({ run, onClick, onDelete }: { run: RunSummary; onClick: (
             <Button type="primary" size="small" ghost icon={<EyeOutlined />}>
               查看
             </Button>
-            <Popconfirm
-              title="删除任务"
-              description="将停止并永久删除该任务，已产出数据一并清除。"
-              okText="停止并删除"
-              okButtonProps={{ danger: true }}
-              cancelText="取消"
-              onConfirm={onDelete}
-            >
-              <Button
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </Popconfirm>
+            {/* Wrap the Popconfirm so clicks inside its (portaled) popup —
+                confirm AND cancel — don't bubble through the React tree to the
+                card's onClick and navigate away. The 查看 button stays outside
+                so it still triggers the card navigation. */}
+            <span onClick={(e) => e.stopPropagation()}>
+              <Popconfirm
+                title="删除任务"
+                description="将停止并永久删除该任务，已产出数据一并清除。"
+                okText="停止并删除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                onConfirm={onDelete}
+              >
+                <Button danger size="small" icon={<DeleteOutlined />} />
+              </Popconfirm>
+            </span>
           </Space>
         </Col>
       </Row>
@@ -469,8 +470,8 @@ export default function InputPage() {
               onClick={() => navigate(`/run/${run.run_id}`)}
               onDelete={() => {
                 deleteRun(run.run_id)
-                  .then(() => { message.success('已删除'); fetchRuns(); })
-                  .catch(() => message.error('删除失败'));
+                  .then(() => { message.success('已停止并删除'); fetchRuns(); })
+                  .catch(() => message.error('停止并删除失败'));
               }}
             />
           ))}

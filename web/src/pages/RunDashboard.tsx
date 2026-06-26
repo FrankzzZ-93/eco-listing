@@ -243,11 +243,17 @@ export default function RunDashboard() {
           <Text
             strong
             style={{ fontSize: 16 }}
-            editable={{
-              text: run?.product_name || '',
-              tooltip: '点击修改产品名称（方便复用记录）',
-              onChange: handleRenameProduct,
-            }}
+            // Only editable when the run is settled: a rename during execution
+            // could be clobbered by the running node's next checkpoint write.
+            editable={
+              run && run.status !== 'running' && run.status !== 'pending'
+                ? {
+                    text: run.product_name || '',
+                    tooltip: '点击修改产品名称（方便复用记录）',
+                    onChange: handleRenameProduct,
+                  }
+                : false
+            }
           >
             {run?.product_name || '未命名'}
           </Text>

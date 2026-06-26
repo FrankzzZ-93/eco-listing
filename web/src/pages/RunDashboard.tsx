@@ -395,6 +395,33 @@ export default function RunDashboard() {
                           style={{ marginBottom: 16 }}
                         />
                       )}
+                      {run?.status === 'waiting_human' &&
+                        run.pending_action?.type === 'upload_competitor_data' && (
+                          <Alert
+                            message="未能自动获取竞品 Listing"
+                            description={
+                              <div>
+                                <div>
+                                  系统未能抓取到竞品 Listing 数据。你可以重新尝试抓取（会保留已上传的评论/词库，只补抓缺失的 Listing 与
+                                  Alex），或在「属性审核」前手动上传竞品 Listing。
+                                </div>
+                                <Button
+                                  type="primary"
+                                  size="small"
+                                  style={{ marginTop: 8 }}
+                                  icon={<PlayCircleOutlined />}
+                                  onClick={handleResume}
+                                  loading={actionLoading}
+                                >
+                                  重新抓取竞品数据
+                                </Button>
+                              </div>
+                            }
+                            type="warning"
+                            showIcon
+                            style={{ marginBottom: 16 }}
+                          />
+                        )}
                       <Title level={5}>执行日志</Title>
                       {run?.status === 'running' && run.research_progress && (
                         <ResearchProgressBanner progress={run.research_progress} />

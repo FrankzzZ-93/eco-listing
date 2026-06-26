@@ -78,7 +78,7 @@ async def product_analyst_node(state: ListingState, toolbox: ToolBox) -> dict:
         "info_fusion",
         {
             "competitor_listings": json.dumps(
-                state["competitor_listings"], ensure_ascii=False
+                state.get("competitor_listings", []), ensure_ascii=False
             ),
             "review_summary": json.dumps(
                 state.get("review_summary", {}), ensure_ascii=False

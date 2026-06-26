@@ -6,12 +6,21 @@ class TestComplianceValidate:
         self.tool = ComplianceTool()
 
     def test_valid_listing(self):
+        # Within hard limits, no forbidden words / ASIN strings -> no hard
+        # violations. Soft minimums (content-fullness encouragement, e.g.
+        # "标题过短") are disabled here so this test targets the hard-validation
+        # path in isolation.
         listing = {
             "title": "Premium Widget for Home Use",
             "bullet_points": ["Feature 1", "Feature 2"],
             "description": "A great product for daily use.",
         }
-        assert self.tool.validate(listing) == []
+        no_soft_minimums = {
+            "title_min_chars": 0,
+            "bullets_total_min_bytes": 0,
+            "description_min_chars": 0,
+        }
+        assert self.tool.validate(listing, no_soft_minimums) == []
 
     def test_title_too_long(self):
         listing = {

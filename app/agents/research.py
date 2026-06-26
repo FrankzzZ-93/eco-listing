@@ -23,28 +23,37 @@ async def _scrape_asin(
     site: str,
     browser,
     max_review_pages: int,
+    *,
+    do_listing: bool,
+    do_alex: bool,
+    do_reviews: bool,
 ) -> dict:
-    """Scrape listing + alex + reviews for a single ASIN in sequence.
+    """Scrape the requested data types for a single ASIN in sequence.
 
-    Returns a dict with keys ``listing``, ``alex``, ``reviews`` and their
-    individual durations. Raises ``CaptchaRequiredError`` if a challenge is
+    Only the buckets requested via ``do_*`` are scraped — so a run that already
+    has e.g. user-uploaded reviews still scrapes the missing listing/Alex. The
+    returned dict only contains keys for the buckets that were scraped (plus
+    their ``*_ms`` durations). Raises ``CaptchaRequiredError`` if a challenge is
     hit so the caller can pause and surface it to the UI.
     """
     result: dict = {}
 
-    t1 = time.time()
-    result["listing"] = await browser.scrape_listing(asin, site)
-    result["listing_ms"] = int((time.time() - t1) * 1000)
+    if do_listing:
+        t1 = time.time()
+        result["listing"] = await browser.scrape_listing(asin, site)
+        result["listing_ms"] = int((time.time() - t1) * 1000)
 
-    t1 = time.time()
-    result["alex"] = await browser.scrape_alex(asin, site, run_id=run_id)
-    result["alex_ms"] = int((time.time() - t1) * 1000)
+    if do_alex:
+        t1 = time.time()
+        result["alex"] = await browser.scrape_alex(asin, site, run_id=run_id)
+        result["alex_ms"] = int((time.time() - t1) * 1000)
 
-    t1 = time.time()
-    result["reviews"] = await browser.scrape_reviews(
-        asin, site, max_pages=max_review_pages, run_id=run_id
-    )
-    result["reviews_ms"] = int((time.time() - t1) * 1000)
+    if do_reviews:
+        t1 = time.time()
+        result["reviews"] = await browser.scrape_reviews(
+            asin, site, max_pages=max_review_pages, run_id=run_id
+        )
+        result["reviews_ms"] = int((time.time() - t1) * 1000)
 
     return result
 
@@ -56,12 +65,17 @@ async def _scrape_all_per_asin(
     browser,
     max_review_pages: int,
     concurrency: int,
+    *,
+    do_listing: bool,
+    do_alex: bool,
+    do_reviews: bool,
 ) -> list:
-    """Scrape all three data types per ASIN with bounded concurrency.
+    """Scrape the missing data types per ASIN with bounded concurrency.
 
-    Each worker handles one ASIN end-to-end (listing → alex → reviews) before
-    the next ASIN starts within that slot, so data is collected in ASIN units
-    rather than phase sweeps. Progress counter ticks once per completed ASIN.
+    Each worker handles one ASIN end-to-end before the next ASIN starts within
+    that slot, so data is collected in ASIN units rather than phase sweeps. Only
+    the buckets flagged via ``do_*`` are scraped (the others were already
+    collected/uploaded). Progress counter ticks once per completed ASIN.
 
     Returns an ordered list of ``(asin, result_dict)`` preserving input order.
     Raises ``CaptchaRequiredError`` from the first ASIN that hits a captcha.
@@ -75,7 +89,10 @@ async def _scrape_all_per_asin(
     async def worker(i: int, asin: str) -> None:
         nonlocal done
         async with sem:
-            res = await _scrape_asin(run_id, asin, site, browser, max_review_pages)
+            res = await _scrape_asin(
+                run_id, asin, site, browser, max_review_pages,
+                do_listing=do_listing, do_alex=do_alex, do_reviews=do_reviews,
+            )
         done += 1
         codex_progress.set_scrape(run_id, "per_asin", done, total)
         results[i] = (asin, res)
@@ -125,10 +142,15 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
         alex_qs = list(state.get("alex_questions") or state.get("rufus_questions") or [])
         reviews = list(state.get("customer_reviews", []))
 
-        # --- Per-ASIN scrape: listing → alex → reviews in one pass per ASIN ---
-        # Each worker handles one ASIN end-to-end before moving to the next.
-        # Only runs when none of the three buckets have data (idempotent on resume).
-        if not listings and not alex_qs and not reviews and competitor_asins and toolbox.browser:
+        # --- Per-ASIN scrape: only the buckets that are still missing ---
+        # Each worker handles one ASIN end-to-end before moving to the next. We
+        # scrape per-bucket (not all-or-nothing): if the user uploaded only
+        # reviews, we still scrape the missing listing + Alex. A bucket that
+        # already has data is left untouched, so this stays idempotent on resume.
+        need_listings = not listings
+        need_alex = not alex_qs
+        need_reviews = not reviews
+        if competitor_asins and toolbox.browser and (need_listings or need_alex or need_reviews):
             try:
                 scraped = await _scrape_all_per_asin(
                     run_id,
@@ -137,6 +159,9 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
                     toolbox.browser,
                     max_review_pages,
                     concurrency,
+                    do_listing=need_listings,
+                    do_alex=need_alex,
+                    do_reviews=need_reviews,
                 )
             except CaptchaRequiredError as e:
                 return {
@@ -156,41 +181,56 @@ async def research_node(state: ListingState, toolbox: ToolBox) -> dict:
                 }
 
             for asin, res in scraped:
-                listings.append(res["listing"])
-                logs.append(MemoryHelper.log_action(
-                    "research", "scrape_listing",
-                    asin=asin,
-                    has_error="error" in res["listing"],
-                    duration_ms=res["listing_ms"],
-                ))
+                if "listing" in res:
+                    listings.append(res["listing"])
+                    logs.append(MemoryHelper.log_action(
+                        "research", "scrape_listing",
+                        asin=asin,
+                        has_error="error" in res["listing"],
+                        duration_ms=res["listing_ms"],
+                    ))
 
-                questions = res["alex"].get("questions", [])
-                alex_qs.extend(questions)
-                logs.append(MemoryHelper.log_action(
-                    "research", "scrape_alex",
-                    asin=asin,
-                    question_count=len(questions),
-                    has_error="error" in res["alex"],
-                    duration_ms=res["alex_ms"],
-                ))
+                if "alex" in res:
+                    questions = res["alex"].get("questions", [])
+                    alex_qs.extend(questions)
+                    logs.append(MemoryHelper.log_action(
+                        "research", "scrape_alex",
+                        asin=asin,
+                        question_count=len(questions),
+                        has_error="error" in res["alex"],
+                        duration_ms=res["alex_ms"],
+                    ))
 
-                asin_reviews = res["reviews"] if isinstance(res["reviews"], list) else []
-                reviews.extend(asin_reviews)
-                logs.append(MemoryHelper.log_action(
-                    "research", "scrape_reviews",
-                    asin=asin,
-                    review_count=len(asin_reviews),
-                    duration_ms=res["reviews_ms"],
-                ))
+                if "reviews" in res:
+                    asin_reviews = res["reviews"] if isinstance(res["reviews"], list) else []
+                    reviews.extend(asin_reviews)
+                    logs.append(MemoryHelper.log_action(
+                        "research", "scrape_reviews",
+                        asin=asin,
+                        review_count=len(asin_reviews),
+                        duration_ms=res["reviews_ms"],
+                    ))
 
         if not listings:
             return {
                 "status": "waiting_human",
                 "pending_action": {
                     "type": "upload_competitor_data",
-                    "message": "无法自动抓取竞品数据，请手动上传竞品 Listing 文件",
+                    "message": "无法自动抓取竞品 Listing，请手动上传竞品 Listing 文件",
                 },
                 "agent_log": [MemoryHelper.log_action("research", "waiting_upload")],
+            }
+
+        # Listings exist but none carries a usable title -> the data is unusable
+        # for downstream generation; ask for a re-upload (message mentions title).
+        if not any(isinstance(l, dict) and l.get("title") for l in listings):
+            return {
+                "status": "waiting_human",
+                "pending_action": {
+                    "type": "upload_competitor_data",
+                    "message": "竞品 Listing 缺少标题（title），请重新上传包含完整标题的竞品数据",
+                },
+                "agent_log": [MemoryHelper.log_action("research", "waiting_upload_missing_title")],
             }
 
         # Also try Alex screenshots (legacy path / manual fallback)

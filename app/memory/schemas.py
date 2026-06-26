@@ -9,6 +9,9 @@ class ListingState(TypedDict):
     run_id: str
     site: str
     competitor_asins: list[str]
+    # User-facing label shown in the run list. Persisted in the checkpoint so the
+    # run list can be derived entirely from checkpoints.db (no separate registry).
+    product_name: str
 
     # --- Phase 1: 认知层 ---
     competitor_listings: list[dict]

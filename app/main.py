@@ -48,81 +48,11 @@ async def lifespan(app: FastAPI):
         from app.app_settings import load_app_settings
         load_app_settings()
 
-        _state.load_registry()
-        await _reconcile_registry(graph)
         await _recover_stale_runs(graph)
 
         yield
 
     await browser.close()
-
-
-def _created_at_from_run_id(run_id: str) -> str:
-    """Best-effort creation time for a reconciled run, parsed from its id
-    (``run_YYYYMMDD_xxxxxx``); falls back to now when it doesn't match."""
-    import datetime
-    import re
-
-    m = re.match(r"run_(\d{4})(\d{2})(\d{2})_", run_id)
-    if m:
-        try:
-            y, mo, d = (int(g) for g in m.groups())
-            return datetime.datetime(y, mo, d, tzinfo=datetime.timezone.utc).isoformat()
-        except ValueError:
-            pass
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-async def _reconcile_registry(graph):
-    """Rebuild the run registry from checkpoints ONLY when the registry is empty.
-
-    The registry (run_registry.json) is the source of truth for which runs the
-    user cares about; the authoritative per-run state lives in the checkpoint DB.
-    Reconciliation exists purely to recover from a *wiped* index (the desync
-    incident where run_registry.json became ``{}`` while checkpoints kept the
-    data) — so the run list doesn't go permanently blank.
-
-    It deliberately does NOT run when the registry already has entries. Re-adding
-    every checkpoint thread on each boot would resurface long-abandoned runs
-    (pending / waiting_human that were never finished) and even undo user
-    deletes whose checkpoints predate the purge-on-delete fix — flooding the
-    homepage's "进行中" list with stale tasks. Trust the curated registry; only
-    rebuild from scratch when there's nothing to trust.
-    """
-    import logging
-
-    logger = logging.getLogger("eco_listing")
-
-    # Registry already has content -> trust it; don't pull orphaned checkpoints
-    # (abandoned/old runs) back into the list.
-    if _state.list_runs():
-        return
-
-    thread_ids = _state.checkpoint_thread_ids(settings.checkpoint_db)
-    new_entries: list[dict] = []
-    for tid in thread_ids:
-        if _state.has_run(tid):
-            continue
-        try:
-            state = await graph.aget_state({"configurable": {"thread_id": tid}})
-            if not state or not state.values:
-                continue
-            v = state.values
-            new_entries.append({
-                "run_id": tid,
-                # product_name isn't part of graph state, so it can't be
-                # recovered — left blank (matches runs created without one).
-                "product_name": "",
-                "site": v.get("site", "amazon.com"),
-                "competitor_asins": v.get("competitor_asins", []),
-                "created_at": _created_at_from_run_id(tid),
-            })
-        except Exception:
-            logger.warning("Failed to reconcile run %s", tid, exc_info=True)
-
-    added = _state.register_runs_bulk(new_entries)
-    if added:
-        logger.warning("Reconciled %d run(s) into the registry from checkpoints", added)
 
 
 async def _recover_stale_runs(graph):
@@ -131,18 +61,17 @@ async def _recover_stale_runs(graph):
 
     Restricted to ``running`` on purpose: a ``pending`` run was created but never
     started by the user, and terminal runs (completed/failed/stopped) are done —
-    none of those should auto-start. This matters now that the registry is
-    reconciled from checkpoints (see _reconcile_registry), which re-surfaces such
-    runs; without this guard a reconciled ``pending`` run would scrape on boot.
+    none of those should auto-start. The run list comes straight from the
+    checkpoint DB, which surfaces every run; without this guard an old
+    ``pending`` run would scrape on boot.
     """
     import asyncio
     import logging
-    from app.api._state import list_runs, get_run_task, set_run_task
+    from app.api._state import checkpoint_thread_ids, get_run_task, set_run_task
 
     logger = logging.getLogger("eco_listing")
 
-    for meta in list_runs():
-        run_id = meta["run_id"]
+    for run_id in checkpoint_thread_ids(settings.checkpoint_db):
         existing = get_run_task(run_id)
         if existing and not existing.done():
             continue

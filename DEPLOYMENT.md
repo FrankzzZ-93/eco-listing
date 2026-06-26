@@ -11,7 +11,7 @@
 - **后端**：Python + FastAPI + LangGraph 编排（竞品抓取 → 属性分析 → 人工审核 → 关键词分类 → 多轮文案生成 → ST 优化 → 导出）。
 - **前端**：React + TypeScript + Vite + Ant Design。
 - **LLM / 浏览器自动化**：通过本机 **Codex CLI**（`codex exec`）调用，使用 Codex 的本地登录态，**不依赖 `.env` 里的 API Key**。
-- **持久化**：SQLite（`checkpoints.db`）+ 本地文件（`artifacts/runs/`、`run_registry.json`）。无需外部数据库。
+- **持久化**：SQLite（`checkpoints.db`，**任务列表与状态的唯一真相来源**）+ 本地文件（`artifacts/runs/`）。无需外部数据库，也无独立的任务索引文件。
 
 > 架构要点：前端（:3000）把 `/api`、`/artifacts` 反向代理到后端（:8000）。后端进程内常驻 LangGraph 图与浏览器实例；每个任务的状态由 LangGraph 的 SQLite checkpointer 持久化。
 
@@ -231,8 +231,7 @@ eco_listing/
 ├── web/                    # 前端（Vite + React）
 ├── requirements.txt        # Python 依赖
 ├── .env.example            # 配置模板
-├── checkpoints.db          # 运行后生成：LangGraph 持久化
-├── run_registry.json       # 运行后生成：任务注册表
+├── checkpoints.db          # 运行后生成：LangGraph 持久化（任务列表的唯一来源）
 └── artifacts/runs/         # 运行后生成：各任务产物
 ```
 

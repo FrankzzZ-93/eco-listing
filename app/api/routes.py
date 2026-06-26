@@ -68,13 +68,10 @@ class UpdatePromptRequest(BaseModel):
 
 @router.post("/runs", status_code=201)
 async def create_run(req: CreateRunRequest):
-    from app.api._state import register_run
-
     if not req.competitor_asins or len(req.competitor_asins) > 10:
         raise HTTPException(400, "需要 1~10 个 ASIN")
 
     run_id = f"run_{datetime.date.today():%Y%m%d}_{uuid.uuid4().hex[:6]}"
-    register_run(run_id, req.product_name, req.site, req.competitor_asins)
 
     graph = _get_graph()
     initial_state = {
@@ -103,7 +100,7 @@ async def create_run(req: CreateRunRequest):
 @router.post("/runs/{run_id}/start")
 async def start_run(run_id: str):
     """Start graph execution after files have been uploaded."""
-    from app.api._state import get_run_task, set_run_task, update_run_status
+    from app.api._state import get_run_task, set_run_task
 
     existing = get_run_task(run_id)
     if existing and not existing.done():
@@ -115,17 +112,18 @@ async def start_run(run_id: str):
     if not state or not state.values:
         raise HTTPException(404, "任务不存在")
 
+    # _run_graph_from_state flips status to "running"; the run list reads status
+    # from the checkpoint, so there's no separate index to update here.
     task = asyncio.create_task(_run_graph_from_state(run_id))
     set_run_task(run_id, task)
-    update_run_status(run_id, "running")
     return {"status": "running"}
 
 
 @router.get("/runs")
 async def list_runs():
-    from app.api._state import list_runs as _list_runs
+    from app.api._state import checkpoint_thread_ids, created_at_from_run_id
 
-    runs = _list_runs()
+    run_ids = checkpoint_thread_ids(settings.checkpoint_db)
     graph = _get_graph()
 
     progress_keys = [
@@ -140,18 +138,23 @@ async def list_runs():
     total_steps = len(progress_keys)
 
     results = []
-    for meta in runs:
-        rid = meta["run_id"]
+    for rid in run_ids:
         status = "unknown"
         completed_steps = 0
         current_step = ""
         current_agent = None
+        product_name = ""
+        site = "amazon.com"
+        competitor_asins: list = []
 
         try:
             config = {"configurable": {"thread_id": rid}}
             state = await graph.aget_state(config)
             if state and state.values:
                 snapshot = state.values
+                product_name = snapshot.get("product_name", "") or ""
+                site = snapshot.get("site", "amazon.com")
+                competitor_asins = snapshot.get("competitor_asins", []) or []
                 status = snapshot.get("status", "running")
                 next_nodes = state.next if state.next else ()
                 if next_nodes and any(
@@ -185,7 +188,11 @@ async def list_runs():
             pass
 
         results.append({
-            **meta,
+            "run_id": rid,
+            "product_name": product_name,
+            "site": site,
+            "competitor_asins": competitor_asins,
+            "created_at": created_at_from_run_id(rid),
             "status": status,
             "completed_steps": completed_steps,
             "total_steps": total_steps,
@@ -193,6 +200,8 @@ async def list_runs():
             "current_agent": current_agent,
         })
 
+    # Newest first (matches the old registry ordering by created_at desc).
+    results.sort(key=lambda r: (r["created_at"], r["run_id"]), reverse=True)
     return results
 
 
@@ -583,13 +592,29 @@ async def resume_run(run_id: str):
     existing_task = get_run_task(run_id)
     task_alive = existing_task is not None and not existing_task.done()
 
+    # A run that stalled without competitor listings (parked at the upload gate,
+    # or failed mid-cognitive-layer) can be retried: re-enter research, which now
+    # scrapes only the still-missing buckets. We reposition as if the upload gate
+    # just ran so research RE-RUNS — setting status without as_node would instead
+    # make _after_research route straight to product_analyst (skipping the scrape).
+    has_listings = MemoryHelper.has(state.values, "competitor_listings")
+    retry_scrape = current_status in ("waiting_human", "failed") and not has_listings
+
     if current_status == "running" and task_alive:
         raise HTTPException(400, "任务正在执行中，无需恢复")
 
-    if current_status not in ("paused", "running", "failed"):
+    if current_status not in ("paused", "running", "failed") and not retry_scrape:
         raise HTTPException(400, f"只能恢复暂停、中断或失败的任务，当前状态: {current_status}")
 
-    await graph.aupdate_state(config, {"status": "running", "error": ""})
+    if retry_scrape:
+        await graph.aupdate_state(
+            config,
+            {"status": "running", "pending_action": {}, "error": ""},
+            as_node="wait_upload",
+        )
+    else:
+        await graph.aupdate_state(config, {"status": "running", "error": ""})
+
     task = asyncio.create_task(_resume_graph(run_id))
     set_run_task(run_id, task)
     return {"status": "running"}
@@ -624,17 +649,18 @@ async def stop_run(run_id: str):
 async def delete_run(run_id: str):
     """Stop (if running) and permanently delete a run.
 
-    Removes both the registry entry AND the LangGraph checkpoint thread. Purging
-    the checkpoint is required now that startup reconciliation backfills the
-    registry from checkpoints — otherwise a deleted run would reappear on the
-    next restart.
+    Purges the LangGraph checkpoint thread — the run's only persistence. Since
+    the run list is derived from the checkpoint DB, deleting the thread removes
+    the run from the list for good.
     """
     import logging
 
-    from app.api._state import get_run_meta, get_run_task, remove_run_task, remove_run
+    from app.api._state import get_run_task, remove_run_task
 
-    meta = get_run_meta(run_id)
-    if not meta:
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
         raise HTTPException(404, "Run not found")
 
     task = get_run_task(run_id)
@@ -642,11 +668,8 @@ async def delete_run(run_id: str):
         task.cancel()
     remove_run_task(run_id)
 
-    remove_run(run_id)
-
-    # Purge the checkpoint so the run is truly gone (and can't be reconciled back).
     try:
-        await _get_graph().checkpointer.adelete_thread(run_id)
+        await graph.checkpointer.adelete_thread(run_id)
     except Exception:
         logging.getLogger("eco_listing").warning(
             "Failed to purge checkpoint for deleted run %s", run_id, exc_info=True

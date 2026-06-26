@@ -18,6 +18,7 @@ import {
   Empty,
   Progress,
   Popconfirm,
+  Checkbox,
 } from 'antd';
 import {
   PlusOutlined,
@@ -154,7 +155,19 @@ const STATUS_LABEL: Record<string, string> = {
   unknown: '未知',
 };
 
-function ActiveRunCard({ run, onClick, onDelete }: { run: RunSummary; onClick: () => void; onDelete: () => void }) {
+function ActiveRunCard({
+  run,
+  onClick,
+  onDelete,
+  selected,
+  onToggleSelect,
+}: {
+  run: RunSummary;
+  onClick: () => void;
+  onDelete: () => void;
+  selected: boolean;
+  onToggleSelect: (checked: boolean) => void;
+}) {
   const percent = run.total_steps > 0
     ? Math.round((run.completed_steps / run.total_steps) * 100)
     : 0;
@@ -166,7 +179,13 @@ function ActiveRunCard({ run, onClick, onDelete }: { run: RunSummary; onClick: (
       onClick={onClick}
       style={{ marginBottom: 12, borderLeft: `3px solid ${run.status === 'waiting_human' ? '#faad14' : '#1677ff'}` }}
     >
-      <Row align="middle" gutter={16}>
+      <Row align="middle" gutter={16} wrap={false}>
+        <Col flex="none">
+          {/* Stop propagation so toggling the checkbox doesn't open the run. */}
+          <span onClick={(e) => e.stopPropagation()}>
+            <Checkbox checked={selected} onChange={(e) => onToggleSelect(e.target.checked)} />
+          </span>
+        </Col>
         <Col flex="auto">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             {STATUS_ICON[run.status] ?? STATUS_ICON.running}
@@ -234,14 +253,44 @@ export default function InputPage() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [accStatus, setAccStatus] = useState<AccountStatus | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const navigate = useNavigate();
 
   const fetchRuns = () => {
     setRunsLoading(true);
     listRuns()
-      .then(setRuns)
+      .then((rs) => {
+        setRuns(rs);
+        // Drop selections for runs that no longer exist (e.g. after deletion).
+        const live = new Set(rs.map((r) => r.run_id));
+        setSelectedIds((prev) => prev.filter((id) => live.has(id)));
+      })
       .catch(() => {})
       .finally(() => setRunsLoading(false));
+  };
+
+  const toggleSelect = (id: string, checked: boolean) =>
+    setSelectedIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
+
+  // Replace the selection within one section (active/finished) wholesale, while
+  // preserving any selection in the other section.
+  const setSectionSelection = (sectionIds: string[], selectedInSection: string[]) =>
+    setSelectedIds((prev) => [...prev.filter((id) => !sectionIds.includes(id)), ...selectedInSection]);
+
+  const bulkDelete = async (ids: string[]) => {
+    if (!ids.length) return;
+    setBulkDeleting(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => deleteRun(id)));
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      const fail = ids.length - ok;
+      if (fail === 0) message.success(`已删除 ${ok} 个任务`);
+      else message.warning(`删除完成：成功 ${ok} 个，失败 ${fail} 个`);
+    } finally {
+      setBulkDeleting(false);
+      fetchRuns();
+    }
   };
 
   useEffect(() => {
@@ -263,6 +312,11 @@ export default function InputPage() {
     }
     return { activeRuns: active, finishedRuns: finished };
   }, [runs]);
+
+  const activeIds = activeRuns.map((r) => r.run_id);
+  const finishedIds = finishedRuns.map((r) => r.run_id);
+  const activeSelected = selectedIds.filter((id) => activeIds.includes(id));
+  const finishedSelected = selectedIds.filter((id) => finishedIds.includes(id));
 
   const handleSubmit = async (values: FormValues) => {
     if (!keywordFile) {
@@ -462,11 +516,41 @@ export default function InputPage() {
 
       {/* Active tasks - shown prominently at the top */}
       {activeRuns.length > 0 && (
-        <Card style={{ marginBottom: 24 }} title={`进行中的任务（${activeRuns.length}）`}>
+        <Card
+          style={{ marginBottom: 24 }}
+          title={`进行中的任务（${activeRuns.length}）`}
+          extra={
+            <Space>
+              <Checkbox
+                checked={activeSelected.length === activeRuns.length}
+                indeterminate={activeSelected.length > 0 && activeSelected.length < activeRuns.length}
+                onChange={(e) => setSectionSelection(activeIds, e.target.checked ? activeIds : [])}
+              >
+                全选
+              </Checkbox>
+              {activeSelected.length > 0 && (
+                <Popconfirm
+                  title={`删除选中的 ${activeSelected.length} 个任务？`}
+                  description="将停止并永久删除，已产出数据一并清除，不可恢复。"
+                  okText="停止并删除"
+                  okButtonProps={{ danger: true }}
+                  cancelText="取消"
+                  onConfirm={() => bulkDelete(activeSelected)}
+                >
+                  <Button danger size="small" icon={<DeleteOutlined />} loading={bulkDeleting}>
+                    删除选中 ({activeSelected.length})
+                  </Button>
+                </Popconfirm>
+              )}
+            </Space>
+          }
+        >
           {activeRuns.map((run) => (
             <ActiveRunCard
               key={run.run_id}
               run={run}
+              selected={selectedIds.includes(run.run_id)}
+              onToggleSelect={(checked) => toggleSelect(run.run_id, checked)}
               onClick={() => navigate(`/run/${run.run_id}`)}
               onDelete={() => {
                 deleteRun(run.run_id)
@@ -576,11 +660,34 @@ export default function InputPage() {
       </Card>
 
       {/* Finished tasks — always visible */}
-      <Card style={{ marginTop: 24 }} title={`历史任务${finishedRuns.length > 0 ? `（${finishedRuns.length}）` : ''}`}>
+      <Card
+        style={{ marginTop: 24 }}
+        title={`历史任务${finishedRuns.length > 0 ? `（${finishedRuns.length}）` : ''}`}
+        extra={
+          finishedSelected.length > 0 ? (
+            <Popconfirm
+              title={`删除选中的 ${finishedSelected.length} 个任务？`}
+              description="将永久删除，已产出数据一并清除，不可恢复。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => bulkDelete(finishedSelected)}
+            >
+              <Button danger size="small" icon={<DeleteOutlined />} loading={bulkDeleting}>
+                删除选中 ({finishedSelected.length})
+              </Button>
+            </Popconfirm>
+          ) : null
+        }
+      >
         {finishedRuns.length > 0 ? (
           <Table
             columns={finishedColumns}
             dataSource={finishedRuns.map((r) => ({ ...r, key: r.run_id }))}
+            rowSelection={{
+              selectedRowKeys: finishedSelected,
+              onChange: (keys) => setSectionSelection(finishedIds, keys as string[]),
+            }}
             size="small"
             pagination={finishedRuns.length > 10 ? { pageSize: 10 } : false}
             locale={{ emptyText: '暂无历史任务' }}

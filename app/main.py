@@ -74,18 +74,29 @@ def _created_at_from_run_id(run_id: str) -> str:
 
 
 async def _reconcile_registry(graph):
-    """Backfill the run registry from surviving checkpoints.
+    """Rebuild the run registry from checkpoints ONLY when the registry is empty.
 
-    The registry (run_registry.json) is a lightweight index that drives the run
-    list; the authoritative per-run state lives in the checkpoint DB. They can
-    desync (e.g. the index is reset/emptied while checkpoints keep accumulating),
-    which makes the UI list go blank even though no data was lost. On startup we
-    reconcile: any checkpoint thread missing from the registry is re-added with
-    metadata read back from its state. Idempotent and self-healing.
+    The registry (run_registry.json) is the source of truth for which runs the
+    user cares about; the authoritative per-run state lives in the checkpoint DB.
+    Reconciliation exists purely to recover from a *wiped* index (the desync
+    incident where run_registry.json became ``{}`` while checkpoints kept the
+    data) — so the run list doesn't go permanently blank.
+
+    It deliberately does NOT run when the registry already has entries. Re-adding
+    every checkpoint thread on each boot would resurface long-abandoned runs
+    (pending / waiting_human that were never finished) and even undo user
+    deletes whose checkpoints predate the purge-on-delete fix — flooding the
+    homepage's "进行中" list with stale tasks. Trust the curated registry; only
+    rebuild from scratch when there's nothing to trust.
     """
     import logging
 
     logger = logging.getLogger("eco_listing")
+
+    # Registry already has content -> trust it; don't pull orphaned checkpoints
+    # (abandoned/old runs) back into the list.
+    if _state.list_runs():
+        return
 
     thread_ids = _state.checkpoint_thread_ids(settings.checkpoint_db)
     new_entries: list[dict] = []

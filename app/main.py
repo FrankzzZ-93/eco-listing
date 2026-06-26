@@ -23,8 +23,49 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
     aiosqlite.Connection.is_alive = lambda self: getattr(self, "_running", True)
 
 
+def _backup_checkpoints(db_path: str) -> None:
+    """Snapshot the checkpoint DB at startup, keeping 2 rotating generations.
+
+    Deletes permanently purge a run's checkpoint (the run list is derived from
+    this DB — there's no soft-delete), so a recent on-disk snapshot is the only
+    safety net against an accidental delete. ``VACUUM INTO`` yields a consistent
+    copy (incl. any WAL). Best-effort: never blocks startup.
+    """
+    import logging
+    import os
+    import sqlite3
+
+    logger = logging.getLogger("eco_listing")
+    if not os.path.exists(db_path):
+        return
+    tmp = f"{db_path}.bak.tmp"
+    bak = f"{db_path}.bak"
+    bak1 = f"{db_path}.bak.1"
+    try:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        con = sqlite3.connect(db_path)
+        try:
+            con.execute("VACUUM INTO ?", (tmp,))
+        finally:
+            con.close()
+        if os.path.exists(bak):
+            os.replace(bak, bak1)  # keep the previous generation
+        os.replace(tmp, bak)
+        logger.info("checkpoints backup written: %s", bak)
+    except Exception:
+        logger.warning("checkpoints backup failed", exc_info=True)
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _backup_checkpoints(settings.checkpoint_db)
+
     browser = BrowserTool()
 
     toolbox = ToolBox(

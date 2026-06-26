@@ -26,6 +26,7 @@ artifacts/
 checkpoints.db
 checkpoints.db-shm
 checkpoints.db-wal
+checkpoints.db.bak*
 
 # --- OS / editor ---
 .DS_Store

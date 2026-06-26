@@ -262,6 +262,7 @@ async def get_run(run_id: str):
 
     live_codex = None
     research_progress = None
+    stage_progress = None
     if effective_status == "running":
         try:
             live_codex = codex_progress.snapshot(run_id)
@@ -271,6 +272,10 @@ async def get_run(run_id: str):
             research_progress = codex_progress.scrape_snapshot(run_id)
         except Exception:
             research_progress = None
+        try:
+            stage_progress = codex_progress.stage_snapshot(run_id)
+        except Exception:
+            stage_progress = None
 
     return {
         "run_id": run_id,
@@ -284,6 +289,7 @@ async def get_run(run_id: str):
         "error": snapshot.get("error") or None,
         "live_codex": live_codex,
         "research_progress": research_progress,
+        "stage_progress": stage_progress,
     }
 
 

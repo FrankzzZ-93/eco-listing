@@ -9,6 +9,7 @@ from app.config import settings
 from app.llm_settings import PROVIDER_OPENAI_COMPATIBLE, get_listing_llm_config, is_configured
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
+from app.tools import codex_progress
 
 # Hard-maximum fallbacks, mirrored from ComplianceTool so the deterministic
 # safety net stays correct even if a run's length_limits is partial/missing.
@@ -124,6 +125,10 @@ def _enforce_limits(listing: dict, limits: dict) -> tuple[dict, list[str]]:
 async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     """LangGraph node: three-round iterative listing generation."""
     logs: list[dict] = []
+    # Live-progress sidecar: copywriter's per-round agent_log only lands when the
+    # node finishes, and API runs have no codex event stream — so push the
+    # current round here for the dashboard ("文案生成中 第 x/3 轮").
+    run_id = codex_progress.current_run_id.get() or state.get("run_id", "")
 
     # Resolve the listing copywriter model. Defaults to codex-cli; users can
     # switch to an OpenAI-compatible API (Opus/Claude/etc.) in the UI settings.
@@ -144,6 +149,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     attrs_json = json.dumps(attrs, ensure_ascii=False)
 
     # Round 1: Draft generation (Gemini)
+    codex_progress.set_stage(run_id, "初稿生成", 1, 3)
     t0 = time.time()
     p1 = toolbox.prompts.render(
         "copywriter",
@@ -166,6 +172,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     )
 
     # Round 2: Alex optimization (Claude)
+    codex_progress.set_stage(run_id, "Alex 优化", 2, 3)
     t0 = time.time()
     p2 = toolbox.prompts.render(
         "copywriter",
@@ -206,6 +213,12 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     MAX_RETRIES = settings.copywriter_max_retries
 
     for attempt in range(MAX_RETRIES + 1):
+        codex_progress.set_stage(
+            run_id,
+            "合规校正" + (f"（重试 {attempt}）" if attempt else ""),
+            3,
+            3,
+        )
         t0 = time.time()
         p3 = toolbox.prompts.render(
             "copywriter",
@@ -289,6 +302,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         )
     )
 
+    codex_progress.clear_stage(run_id)
     return {
         "draft_listing_v1": v1,
         "st_v1": v1.get("search_terms", []),

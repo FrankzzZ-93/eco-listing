@@ -119,3 +119,33 @@ def scrape_snapshot(run_id: str) -> Optional[dict]:
     if entry is None:
         return None
     return {"phase": entry["phase"], "done": entry["done"], "total": entry["total"]}
+
+
+# --- Multi-step generation stage (e.g. copywriter round x/y) ---
+#
+# The copywriter node returns its per-round agent_log only when the whole node
+# finishes, and when it runs via the OpenAI-compatible API there is no codex
+# event stream — so without this sidecar the UI shows no progress during the
+# (multi-minute) copy generation. The node pushes its current round here so the
+# dashboard can show "文案生成中 第 x/y 轮".
+_stage: dict[str, dict] = {}
+
+
+def set_stage(run_id: str, label: str, step: int, total: int) -> None:
+    """Record the current generation stage for ``run_id``. No-op if no run id."""
+    if not run_id:
+        return
+    _stage[run_id] = {"label": label, "step": step, "total": total}
+
+
+def clear_stage(run_id: str) -> None:
+    """Drop the stage entry for ``run_id``. Safe when nothing is tracked."""
+    _stage.pop(run_id, None)
+
+
+def stage_snapshot(run_id: str) -> Optional[dict]:
+    """Return the current generation stage, or ``None`` if untracked."""
+    entry = _stage.get(run_id)
+    if entry is None:
+        return None
+    return {"label": entry["label"], "step": entry["step"], "total": entry["total"]}

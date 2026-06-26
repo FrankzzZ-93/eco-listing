@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag } from 'antd';
+import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag, Progress } from 'antd';
 import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
 import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
@@ -458,6 +458,30 @@ export default function RunDashboard() {
                       )}
                       {run?.status === 'running' && run.live_codex && (
                         <LiveCodexBanner progress={run.live_codex} />
+                      )}
+                      {run?.status === 'running' && run.stage_progress && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                            padding: '8px 12px',
+                            marginBottom: 12,
+                            border: '1px solid var(--ant-color-border, #e8e8e8)',
+                            borderRadius: 6,
+                            background: 'var(--ant-color-fill-quaternary, rgba(0,0,0,0.02))',
+                          }}
+                        >
+                          <Text strong>文案生成中</Text>
+                          <Tag color="blue">
+                            第 {run.stage_progress.step}/{run.stage_progress.total} 轮 · {run.stage_progress.label}
+                          </Tag>
+                          <Progress
+                            percent={Math.round((run.stage_progress.step / run.stage_progress.total) * 100)}
+                            size="small"
+                            style={{ flex: 1, marginBottom: 0, minWidth: 120 }}
+                          />
+                        </div>
                       )}
                       <AgentLogTable logs={run?.agent_log ?? []} />
                       <div style={{ marginTop: 24 }}>

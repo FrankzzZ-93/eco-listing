@@ -58,6 +58,12 @@ export interface ResearchProgress {
   total: number;
 }
 
+export interface StageProgress {
+  label: string;
+  step: number;
+  total: number;
+}
+
 export interface RunDetail {
   run_id: string;
   product_name?: string;
@@ -69,6 +75,7 @@ export interface RunDetail {
   error: string | null;
   live_codex?: LiveCodexProgress | null;
   research_progress?: ResearchProgress | null;
+  stage_progress?: StageProgress | null;
 }
 
 export interface CreateRunRequest {

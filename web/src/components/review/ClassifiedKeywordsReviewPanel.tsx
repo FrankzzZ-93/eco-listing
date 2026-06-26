@@ -47,6 +47,17 @@ function num(val: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// conversion_rate is stored as a fraction — Excel stores a cell shown as
+// "36.4034%" as the float 0.364034, and openpyxl reads that underlying value.
+// Convert only at the presentation boundary so the stored data stays a fraction.
+function fracToPct(v: number): number {
+  return +(v * 100).toFixed(4);
+}
+function pctToFrac(val: unknown): number | null {
+  const n = num(val);
+  return n === null ? null : +(n / 100).toFixed(6);
+}
+
 function flatten(raw: Record<string, unknown>): ClassifiedRow[] {
   const rows: ClassifiedRow[] = [];
   for (const cat of CATEGORIES) {
@@ -151,7 +162,8 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
         translation: String(values.translation ?? '').trim(),
         search_volume: num(values.search_volume),
         bid_price: num(values.bid_price),
-        conversion_rate: num(values.conversion_rate),
+        // The form field is a percentage (label "点击转化率(%)"); store as fraction.
+        conversion_rate: pctToFrac(values.conversion_rate),
         rationale: String(values.rationale ?? '').trim(),
         usage: String(values.usage ?? '').trim(),
       };
@@ -213,8 +225,14 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
   const exportName = `${runId}_classified_keywords`;
   const handleExportJson = () => downloadJson(`${exportName}.json`, buildPayload());
   const handleExportCsv = () => {
+    // conversion_rate is a fraction internally; export it as a percentage to
+    // match the column header and the on-screen display.
+    const csvRows = rows.map((r) => ({
+      ...r,
+      conversion_rate: r.conversion_rate === null ? '' : fracToPct(r.conversion_rate),
+    }));
     const csv = rowsToCsv(
-      rows as unknown as Record<string, unknown>[],
+      csvRows as unknown as Record<string, unknown>[],
       [
         { key: 'keyword', label: '关键词' },
         { key: 'translation', label: '翻译' },
@@ -307,7 +325,7 @@ export default function ClassifiedKeywordsReviewPanel({ runId, pendingAction, me
       dataIndex: 'conversion_rate',
       key: 'conversion_rate',
       width: 110,
-      render: (v: number | null) => (v === null ? '-' : `${v}%`),
+      render: (v: number | null) => (v === null ? '-' : `${fracToPct(v)}%`),
     },
     {
       title: '分类',

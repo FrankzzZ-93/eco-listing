@@ -18,9 +18,12 @@ class Settings(BaseSettings):
     # Sizing notes: the keyword_strategist `classify` step routinely sends a
     # ~10K-token prompt and asks Claude Sonnet to emit ~10K tokens of
     # structured JSON in one shot, which empirically takes 3-7 minutes via the
-    # codex CLI. 600s gives comfortable headroom while still aborting truly
-    # hung subprocesses. Tune via the `CODEX_TIMEOUT` env var.
-    codex_timeout: int = 600
+    # codex CLI — and listing scrapes that fall back to Codex can run much
+    # longer. 1800s (30 min) gives comfortable headroom while still aborting
+    # truly hung subprocesses. Override per-deployment via the config-center
+    # "Codex 超时" setting (app_settings.codex_timeout) or the `CODEX_TIMEOUT`
+    # env var.
+    codex_timeout: int = 1800
     scrape_max_review_pages: int = 3
     # Max simultaneous competitor scrapes per research phase (listing/Alex/
     # reviews). Bounds concurrent codex CLI subprocesses to avoid overload /

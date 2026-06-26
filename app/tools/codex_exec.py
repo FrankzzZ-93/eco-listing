@@ -174,7 +174,16 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         CodexExecTimeout: subprocess didn't finish in ``timeout`` seconds.
         CodexExecError: binary missing or subprocess returned a non-zero code.
     """
-    effective_timeout = timeout if timeout is not None else settings.codex_timeout
+    if timeout is not None:
+        effective_timeout = timeout
+    else:
+        # Honor the config-center "Codex 超时" setting (editable at runtime,
+        # no restart); falls back to the env/config default.
+        from app import app_settings
+
+        effective_timeout = app_settings.get_scrape_param(
+            "codex_timeout", settings.codex_timeout
+        )
     prompt_data = prompt.encode("utf-8")
     prompt_bytes = len(prompt_data)
 

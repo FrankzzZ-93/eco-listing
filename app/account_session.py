@@ -1,15 +1,17 @@
-"""Account login session manager for the browser-act review scraper.
+"""Amazon account session manager — manual login in the real-Chrome window.
 
-Establishes and remembers an authenticated Amazon session, independent of any
-run. Login runs as a background task; if it hits a captcha / OTP the manager
-exposes a ``waiting_captcha`` state with a screenshot URL so the settings page
-can pop the same captcha modal used by runs. On success the browser-act browser
-profile persists the cookies, so subsequent scrape runs reuse the login.
+The optimized login flow (replaces the old scripted browser-act form-fill):
+open the persistent real Chrome (headed) at Amazon and let the user sign in
+*themselves* in that window. Amazon blocks scripted form-fills on the auth pages
+(verified in a live spike: ``ERR_BLOCKED_BY_RESPONSE``), so scripting login is
+both fragile and pointless — and doing it manually means the backend never
+handles the password. We only *detect* success. The login persists in the Chrome
+profile (``settings.chrome_profile_dir``) so every later scrape reuses it.
 
-Uses a dedicated browser-act session name (``eco_listing_login``) on the same
-persistent browser as scraping (``eco_listing``); browser-act sessions on one
-browser share login state, so logging in here authenticates the scrape session
-too.
+State machine: ``idle → opening → waiting_manual → logged_in`` (or ``failed`` /
+``unavailable``). The frontend opens the window, the user logs in (incl. any
+captcha/OTP, right there in the real browser), then clicks "我已登录" which
+re-checks the session.
 """
 
 from __future__ import annotations
@@ -22,17 +24,16 @@ from typing import Any, Optional
 
 from app import app_settings
 from app.config import settings
-from app.errors import CaptchaRequiredError, LoginRequiredError
-from app.tools.browser_act_scraper import LoginManager
-from app.tools.file_store import to_artifact_url
+from app.errors import LoginRequiredError
+from app.tools.chrome_session import LoginManager
 
 logger = logging.getLogger(__name__)
 
-# States: idle | logging_in | waiting_captcha | logged_in | failed | unavailable
+# idle | opening | waiting_manual | logged_in | failed | unavailable
 _state: dict[str, Any] = {
     "state": "idle",
     "message": "",
-    "image_url": "",
+    "image_url": "",  # kept for response-shape compat; always "" (no captcha modal)
     "updated_at": "",
 }
 
@@ -40,36 +41,55 @@ _manager: Optional[LoginManager] = None
 _task: Optional[asyncio.Task] = None
 _lock = asyncio.Lock()
 
-_ACCOUNT_DIR_NAME = "_account"
+# Persist the logged-in flag to disk so it survives backend restarts. The status
+# poll never touches the browser (would pop Chrome), so without this the UI would
+# forget the login on every reload. Lazily verified — a stale flag is corrected
+# when a scrape hits the login wall.
+_LOGIN_MARKER = os.path.join(settings.chrome_profile_dir, ".eco_logged_in")
 
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def _set(state: str, message: str = "", image_url: str = "") -> None:
-    _state.update(
-        {"state": state, "message": message, "image_url": image_url, "updated_at": _now()}
-    )
+def _persist_logged_in(on: bool) -> None:
+    try:
+        if on:
+            os.makedirs(settings.chrome_profile_dir, exist_ok=True)
+            open(_LOGIN_MARKER, "w").close()
+        elif os.path.exists(_LOGIN_MARKER):
+            os.remove(_LOGIN_MARKER)
+    except Exception:
+        logger.debug("persist login marker failed", exc_info=True)
+
+
+def _restore_marker() -> None:
+    """If idle but a persisted login flag exists (e.g. after a restart), surface
+    it as logged-in. Reconciles on each status read; once it flips to logged_in
+    the state is no longer idle, so it won't re-fire (until an explicit logout)."""
+    if _state["state"] == "idle" and os.path.exists(_LOGIN_MARKER):
+        _set("logged_in", "已登录（已记住登录态）")
+
+
+def _set(state: str, message: str = "") -> None:
+    _state.update({"state": state, "message": message, "image_url": "", "updated_at": _now()})
+    _persist_logged_in(state == "logged_in")
     logger.info("account_session state -> %s (%s)", state, message)
 
 
 def _get_manager() -> LoginManager:
     global _manager
     if _manager is None:
-        headed = not app_settings.get_scrape_param("browser_headless", True)
-        proxy_region = app_settings.get_account().get("proxy_region", "")
-        _manager = LoginManager(headed=headed, proxy_region=proxy_region)
+        _manager = LoginManager()
     return _manager
 
 
-def _screenshot_dir() -> str:
-    d = os.path.join(settings.artifacts_dir, _ACCOUNT_DIR_NAME)
-    os.makedirs(d, exist_ok=True)
-    return d
+def _site() -> str:
+    return app_settings.get_account().get("site") or "amazon.com"
 
 
 def get_status() -> dict[str, Any]:
+    _restore_marker()
     return {
         "available": LoginManager.available(),
         "state": _state["state"],
@@ -80,90 +100,78 @@ def get_status() -> dict[str, Any]:
     }
 
 
-async def _do_login() -> None:
-    account = app_settings.get_account()
-    site = account.get("site") or "amazon.com"
-    email = account.get("email") or ""
-    password = account.get("password") or ""
-    manager = _get_manager()
+async def _do_open() -> None:
+    """Open the headed Chrome at Amazon so the user can sign in manually."""
     try:
-        _set("logging_in", "正在登录…")
-        ok = await manager.login(
-            site, email, password, screenshot_dir=_screenshot_dir()
+        _set("opening", "正在打开浏览器…")
+        if await _get_manager().is_logged_in(_site()):
+            _set("logged_in", "已登录，登录态有效")
+            return
+        await _get_manager().open_for_login(_site())
+        _set(
+            "waiting_manual",
+            "已打开 Chrome 窗口，请在窗口中登录你的 Amazon 账号（含验证码/二次验证），"
+            "完成后点「我已登录」",
         )
-        if ok:
-            _set("logged_in", "登录成功，已记住登录态")
-        else:
-            _set("failed", "登录未成功，请检查账号或重试")
-    except CaptchaRequiredError as e:
-        _set("waiting_captcha", str(e), to_artifact_url(e.image_path))
     except LoginRequiredError as e:
         _set("failed", str(e))
-    except Exception as e:
-        logger.warning("account login failed", exc_info=True)
-        _set("failed", f"登录出错: {e}")
+    except Exception as e:  # noqa: BLE001 — surface any launch error to the UI
+        logger.warning("open login window failed", exc_info=True)
+        _set("failed", f"打开登录窗口出错: {e}")
 
 
 async def start_login() -> dict[str, Any]:
     if not LoginManager.available():
-        _set("unavailable", "browser-act 未安装")
+        _set("unavailable", "未找到本机 Google Chrome，无法打开登录窗口")
         return get_status()
     async with _lock:
         global _task
         if _task is not None and not _task.done():
             return get_status()
-        _task = asyncio.create_task(_do_login())
+        _task = asyncio.create_task(_do_open())
     return get_status()
 
 
-async def submit_captcha(answer: str) -> dict[str, Any]:
-    if _state["state"] != "waiting_captcha":
+async def confirm_login() -> dict[str, Any]:
+    """User clicked 我已登录 — verify the window is actually signed in."""
+    if not LoginManager.available():
+        _set("unavailable", "未找到本机 Google Chrome")
         return get_status()
-    manager = _get_manager()
-    _set("logging_in", "正在校验…")
     try:
-        cleared = await manager.submit_verification(answer)
-        site = app_settings.get_account().get("site") or "amazon.com"
-        logged_in = await manager.is_logged_in(site)
-        if logged_in:
+        if await _get_manager().is_logged_in(_site()):
             _set("logged_in", "登录成功，已记住登录态")
-        elif cleared:
-            _set("failed", "验证已通过但登录未完成，请重试登录")
         else:
-            # Challenge still present (e.g. wrong captcha) — capture again.
-            img = os.path.join(_screenshot_dir(), "login_verify.png")
-            await manager.capture_screenshot(img)
-            _set("waiting_captcha", "验证未通过，请重新输入", to_artifact_url(img))
-    except Exception as e:
-        logger.warning("account captcha submit failed", exc_info=True)
-        _set("failed", f"校验出错: {e}")
+            _set("waiting_manual", "还没检测到登录，请在窗口里完成登录后再点「我已登录」")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("confirm_login failed", exc_info=True)
+        _set("failed", f"检测登录态出错: {e}")
     return get_status()
+
+
+# Back-compat: the ``/account/captcha`` endpoint historically submitted a captcha
+# answer. With manual login there is nothing to type back — the user solves any
+# challenge in the real window — so this just re-checks the session.
+async def submit_captcha(answer: str = "") -> dict[str, Any]:  # noqa: ARG001
+    return await confirm_login()
 
 
 async def refresh_status() -> dict[str, Any]:
-    """Probe whether the persistent session is currently logged in."""
+    """Report the cached login state — **never touches the browser**.
+
+    The settings page polls this on every load/refresh, so launching *or even
+    navigating/focusing* Chrome here would pop the window on each refresh. The
+    real login check runs only on the explicit "打开浏览器登录" / "我已登录"
+    actions (which the user takes deliberately, after the VPN reminder).
+    """
     if not LoginManager.available():
-        _set("unavailable", "browser-act 未安装")
-        return get_status()
-    if _state["state"] in ("logging_in", "waiting_captcha"):
-        return get_status()
-    site = app_settings.get_account().get("site") or "amazon.com"
-    try:
-        if await _get_manager().is_logged_in(site):
-            _set("logged_in", "已登录")
-        else:
-            _set("idle", "未登录")
-    except Exception as e:
-        logger.warning("refresh_status failed", exc_info=True)
-        _set("idle", f"无法检测登录态: {e}")
+        _set("unavailable", "未找到本机 Google Chrome")
     return get_status()
 
 
 async def logout() -> dict[str, Any]:
-    manager = _get_manager()
     try:
-        await manager.close()
+        await _get_manager().close()
     except Exception:
-        pass
-    _set("idle", "已退出当前会话窗口")
+        logger.debug("logout close failed", exc_info=True)
+    _set("idle", "已关闭浏览器会话")
     return get_status()

@@ -3,8 +3,18 @@ import { Drawer, Spin, Typography, Alert } from 'antd';
 import { EyeOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import { getRunData } from '../../api/runs';
+import ScrapeScreenshots from './ScrapeScreenshots';
 
 const { Text } = Typography;
+
+// Data keys that have captured scrape screenshots worth showing alongside the
+// data, so the user can cross-check the extracted reviews / Alex questions
+// against what the browser actually saw.
+const SHOT_KIND: Record<string, 'reviews' | 'alex'> = {
+  customer_reviews: 'reviews',
+  review_summary: 'reviews',
+  alex_questions: 'alex',
+};
 
 interface Props {
   open: boolean;
@@ -56,10 +66,34 @@ export default function DataPreviewDrawer({ open, runId, dataKey, label, onClose
         <Alert message="加载失败" description={error} type="error" showIcon />
       ) : (
         <>
+          {SHOT_KIND[dataKey] && (
+            <div style={{ marginBottom: 12 }}>
+              <Text strong style={{ display: 'block', marginBottom: 6 }}>
+                📷 抓取截图（供查验，点击可放大）
+              </Text>
+              <div
+                style={{
+                  maxHeight: 300,
+                  overflowY: 'auto',
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 6,
+                  padding: 8,
+                }}
+              >
+                <ScrapeScreenshots runId={runId} kind={SHOT_KIND[dataKey]} />
+              </div>
+            </div>
+          )}
           <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
             数据键：{dataKey}
           </Text>
-          <div style={{ height: 'calc(100vh - 160px)', border: '1px solid #d9d9d9', borderRadius: 6 }}>
+          <div
+            style={{
+              height: SHOT_KIND[dataKey] ? 'calc(100vh - 470px)' : 'calc(100vh - 160px)',
+              border: '1px solid #d9d9d9',
+              borderRadius: 6,
+            }}
+          >
             <Editor
               height="100%"
               defaultLanguage="json"

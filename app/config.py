@@ -52,6 +52,16 @@ class Settings(BaseSettings):
 
     artifacts_dir: str = "artifacts/runs"
     checkpoint_db: str = "checkpoints.db"
+    # Persistent user-data-dir for the real-Chrome scraping engine
+    # (app/tools/chrome_session.py). Holds the Amazon login so it survives across
+    # runs — the free replacement for browser-act's persistent cloud browser.
+    chrome_profile_dir: str = "artifacts/_chrome_profile"
+    # Optional: when set (e.g. "http://172.20.0.1:9222"), the engine CONNECTS to
+    # an externally-run real Chrome over CDP instead of launching one. This is the
+    # recommended setup on WSL2 with no in-WSL display: run Chrome on the Windows
+    # host (with --remote-debugging-port + a dedicated profile, where the user
+    # logs in), and the WSL2 backend drives it. Empty = launch locally.
+    chrome_cdp_url: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8000

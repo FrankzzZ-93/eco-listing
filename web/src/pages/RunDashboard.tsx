@@ -4,6 +4,7 @@ import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, mess
 import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
 import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
+import ScrapeScreenshots from '../components/status/ScrapeScreenshots';
 import DataPreviewCollapse from '../components/status/DataPreviewCollapse';
 import LiveCodexBanner from '../components/status/LiveCodexBanner';
 import ResearchProgressBanner from '../components/status/ResearchProgressBanner';
@@ -484,6 +485,10 @@ export default function RunDashboard() {
                         </div>
                       )}
                       <AgentLogTable logs={run?.agent_log ?? []} />
+                      <div style={{ marginTop: 24 }}>
+                        <Title level={5}>抓取截图（评论 / Alex，留存供 review）</Title>
+                        <ScrapeScreenshots runId={runId!} />
+                      </div>
                       <div style={{ marginTop: 24 }}>
                         <DataPreviewCollapse memorySnapshot={run?.memory_snapshot} runId={runId!} />
                       </div>

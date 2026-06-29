@@ -1,10 +1,10 @@
 """Dual-layer browser tool: Playwright (fast/cheap) with Codex CLI fallback (smart/resilient).
 
-Reviews can additionally be scraped via the logged-in ``browser-act`` engine
-(see :class:`~app.tools.browser_act_scraper.BrowserActScraper`), selected by the
-``review_engine`` setting in :mod:`app.app_settings`. The browser-act scraper is
-shared as ``self.browser_act`` so the captcha-submit endpoint can drive the same
-live session that a paused run left parked on a verification page.
+Reviews + Rufus questions can additionally be scraped via the logged-in
+**real-Chrome** engine (see :class:`~app.tools.chrome_session.ReviewScraper`),
+selected by the ``review_engine`` setting in :mod:`app.app_settings`. That
+scraper is shared as ``self.review_scraper`` so the captcha-submit endpoint can
+drive the same live Chrome window a paused run left parked on a challenge.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ class BrowserTool:
     """Unified browser interface for the Research Agent.
 
     Strategy:
-      Layer 0 — browser-act: logged-in, session-persistent review scraping
-               (primary for reviews when configured). Surfaces captchas.
+      Layer 0 — real Chrome: logged-in, persistent-profile review/Rufus
+               scraping (primary when configured). Surfaces captchas.
       Layer 1 — Playwright: fast, precise, low-cost structured scraping.
       Layer 2 — Codex CLI: LLM-driven browser for anti-scraping fallback
                and complex interactions (Alex Q&A expansion, dynamic content).
@@ -35,21 +35,25 @@ class BrowserTool:
     def __init__(self):
         self.scraper = PlaywrightScraper()
         self.codex = CodexTool()
-        # Lazily constructed shared browser-act review scraper. Kept as a single
-        # instance so a parked captcha session can be resumed by the API layer.
-        self._browser_act: Optional[Any] = None
+        # Lazily constructed shared logged-in review scraper (real Chrome). Kept
+        # as a single instance so the captcha-submit endpoint can drive the same
+        # live session that a paused run left parked.
+        self._review_scraper: Optional[Any] = None
 
     @property
-    def browser_act(self):
-        """Shared ReviewScraper instance (constructed on first access)."""
-        if self._browser_act is None:
-            from app.tools.browser_act_scraper import ReviewScraper
-            from app import app_settings
+    def review_scraper(self):
+        """Shared logged-in real-Chrome ReviewScraper (constructed on first use)."""
+        if self._review_scraper is None:
+            from app.tools.chrome_session import ReviewScraper
 
-            headed = not app_settings.get_scrape_param("browser_headless", True)
-            proxy_region = app_settings.get_account().get("proxy_region", "")
-            self._browser_act = ReviewScraper(headed=headed, proxy_region=proxy_region)
-        return self._browser_act
+            self._review_scraper = ReviewScraper()
+        return self._review_scraper
+
+    # Back-compat alias: the captcha-submit endpoint historically referenced
+    # ``browser_act``; the engine is now real Chrome but the surface is the same.
+    @property
+    def browser_act(self):
+        return self.review_scraper
 
     async def scrape_listing(self, asin: str, site: str) -> dict[str, Any]:
         """Get product listing content (title, bullets, description, A+).
@@ -94,8 +98,8 @@ class BrowserTool:
         pop a captcha modal. Other failures fall back to Playwright -> Codex.
         """
         engine = self._review_engine()
-        if engine == "browser_act":
-            scraper = self.browser_act
+        if engine in ("real_chrome", "browser_act"):
+            scraper = self.review_scraper
             if scraper.available():
                 screenshot_dir = (
                     os.path.join(settings.artifacts_dir, run_id) if run_id else None
@@ -158,8 +162,8 @@ class BrowserTool:
         propagates so the run can pause; other failures or an empty result fall
         back to the Codex CLI engine.
         """
-        if self._review_engine() == "browser_act":
-            scraper = self.browser_act
+        if self._review_engine() in ("real_chrome", "browser_act"):
+            scraper = self.review_scraper
             if scraper.available():
                 screenshot_dir = (
                     os.path.join(settings.artifacts_dir, run_id) if run_id else None
@@ -316,8 +320,8 @@ class BrowserTool:
     async def close(self):
         """Clean up browser resources."""
         await self.scraper.close()
-        if self._browser_act is not None:
+        if self._review_scraper is not None:
             try:
-                await self._browser_act.close()
+                await self._review_scraper.close()
             except Exception:
-                logger.debug("browser-act close failed", exc_info=True)
+                logger.debug("review scraper close failed", exc_info=True)

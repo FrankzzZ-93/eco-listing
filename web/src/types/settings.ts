@@ -21,7 +21,7 @@ export interface LlmTestResult {
   message: string;
 }
 
-export type ReviewEngine = 'browser_act' | 'builtin';
+export type ReviewEngine = 'real_chrome' | 'builtin';
 
 export interface AppSettings {
   account: {
@@ -53,8 +53,8 @@ export interface AppSettingsUpdate {
 
 export type AccountState =
   | 'idle'
-  | 'logging_in'
-  | 'waiting_captcha'
+  | 'opening'
+  | 'waiting_manual'
   | 'logged_in'
   | 'failed'
   | 'unavailable';

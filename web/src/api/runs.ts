@@ -25,6 +25,18 @@ export async function submitCaptcha(runId: string, answer: string): Promise<void
   await client.post(`/runs/${runId}/captcha`, { answer });
 }
 
+export interface ScrapeScreenshot {
+  name: string;
+  url: string; // same-origin /artifacts/... (proxied to the backend)
+  kind: 'reviews' | 'alex' | 'verify';
+  asin: string;
+}
+
+export async function getRunScreenshots(runId: string): Promise<ScrapeScreenshot[]> {
+  const res = await client.get<{ screenshots: ScrapeScreenshot[] }>(`/runs/${runId}/screenshots`);
+  return res.data.screenshots;
+}
+
 export async function uploadFile(
   runId: string,
   file: File,

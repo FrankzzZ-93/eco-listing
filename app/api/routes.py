@@ -308,6 +308,38 @@ _VIEWABLE_KEYS = frozenset([
 ])
 
 
+@router.get("/runs/{run_id}/screenshots")
+async def get_run_screenshots(run_id: str):
+    """List captured scrape screenshots (reviews / Alex / verification) so the UI
+    can show them for review. The real-Chrome scraper writes PNGs straight into
+    the run's artifacts dir, which is served under ``/artifacts/{run_id}/``."""
+    import glob
+    import re
+
+    asin_re = re.compile(r"(B0[A-Z0-9]{8})")
+    base = os.path.join(settings.artifacts_dir, run_id)
+    shots: list[dict[str, str]] = []
+    if os.path.isdir(base):
+        for path in sorted(glob.glob(os.path.join(base, "*.png"))):
+            name = os.path.basename(path)
+            if name.startswith("reviews_"):
+                kind = "reviews"
+            elif name.startswith("alex_"):
+                kind = "alex"
+            elif name.startswith("verify_"):
+                kind = "verify"
+            else:
+                continue  # skip unrelated PNGs (e.g. exported charts)
+            m = asin_re.search(name)
+            shots.append({
+                "name": name,
+                "url": f"/artifacts/{run_id}/{name}",
+                "kind": kind,
+                "asin": m.group(1) if m else "",
+            })
+    return {"screenshots": shots}
+
+
 @router.get("/runs/{run_id}/data/{key}")
 async def get_run_data(run_id: str, key: str):
     if key not in _VIEWABLE_KEYS:
@@ -1108,6 +1140,14 @@ async def account_login():
     from app import account_session
 
     return await account_session.start_login()
+
+
+@router.post("/account/confirm")
+async def account_confirm():
+    """User finished signing in manually — re-check the live Chrome session."""
+    from app import account_session
+
+    return await account_session.confirm_login()
 
 
 @router.post("/account/captcha")

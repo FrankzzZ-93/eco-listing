@@ -11,8 +11,9 @@ export async function startAccountLogin(): Promise<AccountStatus> {
   return res.data;
 }
 
-export async function submitAccountCaptcha(answer: string): Promise<AccountStatus> {
-  const res = await client.post<AccountStatus>('/account/captcha', { answer });
+// User finished signing in manually in the real-Chrome window — re-check it.
+export async function confirmAccountLogin(): Promise<AccountStatus> {
+  const res = await client.post<AccountStatus>('/account/confirm');
   return res.data;
 }
 

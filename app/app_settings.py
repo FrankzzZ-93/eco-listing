@@ -3,14 +3,15 @@
 Consolidates the previously scattered configuration into one place that the
 homepage config entry edits:
 
-- **account**: the Amazon login used by the browser-act review scraper
-  (``site`` / ``email`` / ``password``). Persisted locally so the login session
-  can be (re)established and remembered.
+- **account**: the Amazon login context for the real-Chrome review scraper
+  (``site`` / ``email``). Login itself is performed manually in the browser
+  window (see :mod:`app.account_session`); the session is remembered in the
+  persistent Chrome profile.
 - **scrape**: knobs that used to be ``.env``-only in :mod:`app.config`
   (``browser_headless``, ``scrape_max_review_pages``, ``research_concurrency``,
   ``codex_timeout``). Values here override the ``.env`` defaults at runtime.
 - **review_engine**: which scraper handles competitor reviews
-  (``browser_act`` = logged-in browser-act, ``builtin`` = Playwright+Codex).
+  (``real_chrome`` = logged-in real Chrome, ``builtin`` = Playwright+Codex).
 
 Settings persist to ``app_settings.json`` (atomic write) and are read at runtime
 so changes take effect without a server restart. Secrets are masked in
@@ -28,9 +29,10 @@ from app.config import settings as env_settings
 
 _SETTINGS_FILE = "app_settings.json"
 
-ENGINE_BROWSER_ACT = "browser_act"
-ENGINE_BUILTIN = "builtin"
-VALID_ENGINES = (ENGINE_BROWSER_ACT, ENGINE_BUILTIN)
+ENGINE_REAL_CHROME = "real_chrome"  # logged-in real Google Chrome (free)
+ENGINE_BROWSER_ACT = "browser_act"  # legacy id, auto-migrated to real_chrome
+ENGINE_BUILTIN = "builtin"  # Playwright + Codex fallback only
+VALID_ENGINES = (ENGINE_REAL_CHROME, ENGINE_BUILTIN)
 
 
 def _defaults() -> dict[str, Any]:
@@ -50,7 +52,7 @@ def _defaults() -> dict[str, Any]:
             "research_concurrency": env_settings.research_concurrency,
             "codex_timeout": env_settings.codex_timeout,
         },
-        "review_engine": ENGINE_BROWSER_ACT,
+        "review_engine": ENGINE_REAL_CHROME,
     }
 
 
@@ -74,6 +76,8 @@ def _normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
                 if isinstance(v, int) and v > 0:
                     cfg["scrape"][k] = v
         engine = raw.get("review_engine")
+        if engine == ENGINE_BROWSER_ACT:
+            engine = ENGINE_REAL_CHROME  # migrate the legacy browser-act setting
         if engine in VALID_ENGINES:
             cfg["review_engine"] = engine
     if not cfg["account"]["site"]:
@@ -148,5 +152,5 @@ def public_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "proxy_region": cfg["account"].get("proxy_region", ""),
         },
         "scrape": dict(cfg["scrape"]),
-        "review_engine": cfg.get("review_engine", ENGINE_BROWSER_ACT),
+        "review_engine": cfg.get("review_engine", ENGINE_REAL_CHROME),
     }

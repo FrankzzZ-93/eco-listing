@@ -11,7 +11,8 @@
 - **后端**：Python + FastAPI + LangGraph 编排（竞品抓取 → 属性分析 → 人工审核 → 关键词分类 → 多轮文案生成 → ST 优化 → 导出）。
 - **前端**：React + TypeScript + Vite + Ant Design。
 - **LLM**：默认通过本机 **Codex CLI**（`codex exec`）调用，用 Codex 本地登录态，**不依赖 `.env` API Key**（文案环节可在配置中心改用 OpenAI 兼容 API）。
-- **登录态网页抓取**：竞品评论 / Rufus（Alex）问题用**本机真实 Google Chrome**（Playwright `channel="chrome"` 驱动，免费、过反爬，替换原付费 browser-act）；复杂或兜底场景回退到 Codex 驱动的浏览器。
+- **登录态网页抓取**：竞品评论 / Rufus（Alex）问题用**本机真实 Google Chrome**（Playwright `channel="chrome"` 驱动，免费、过反爬，替换原付费 browser-act）；复杂或兜底场景回退到 Codex 驱动的浏览器。抓取竞品 Listing 时一并下载主图，供生图作参考。
+- **AI 商品图生成**：在「最终产出」页可进入「商品图生成」，通过 **Codex 内置 `image_gen` 工具**出图（同样走 Codex 登录态，**无需额外 API Key 或依赖**）。支持参考图（竞品图 / 上传 / 已生成图）保证产品一致、纯白底主图（绿幕 chroma-key）、异步任务（刷新不丢、历史任务）、批量下载。图片落盘到 `artifacts/runs/<run_id>/generated/`。
 - **持久化**：SQLite（`checkpoints.db`，**任务列表与状态的唯一真相来源**）+ 本地文件（`artifacts/runs/`）。无需外部数据库，也无独立的任务索引文件。
 
 > 架构要点：前端（:3000）把 `/api`、`/artifacts` 反向代理到后端（:8000）。后端进程内常驻 LangGraph 图与浏览器实例；每个任务的状态由 LangGraph 的 SQLite checkpointer 持久化。

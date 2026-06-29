@@ -118,9 +118,10 @@ _JS_EXTRACT_ALEX = """(() => {
 })()"""
 
 _JS_SCROLL_ALEX = (
-    "(() => { const e = document.querySelector('#dpx-rex-nice-widget-container');"
-    " (e || document.body).scrollIntoView({block:'center'});"
-    " window.scrollTo(0, document.body.scrollHeight*0.7); })()"
+    "(() => { const b = document.body || document.documentElement; if (!b) return;"
+    " const e = document.querySelector('#dpx-rex-nice-widget-container');"
+    " (e || b).scrollIntoView({block:'center'});"
+    " window.scrollTo(0, (b.scrollHeight || 0) * 0.7); })()"
 )
 
 # Distinct (filterByStar, sortBy) review "views". Amazon has lately been
@@ -322,14 +323,22 @@ class ChromeSession:
 
 
 async def _screenshot(page, path: str, *, selector: Optional[str] = None) -> Optional[str]:
-    """Best-effort screenshot (element if selector given, else viewport)."""
+    """Best-effort screenshot: the element if ``selector`` is given and shootable,
+    otherwise the viewport. An element-screenshot failure (hidden / 0-size /
+    detached) falls back to a viewport shot rather than yielding no file."""
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        if selector:
+    except Exception:
+        return None
+    if selector:
+        try:
             el = await page.query_selector(selector)
             if el:
                 await el.screenshot(path=path)
                 return path
+        except Exception:
+            logger.debug("element screenshot failed, falling back to viewport: %s", path)
+    try:
         await page.screenshot(path=path)
         return path
     except Exception:
@@ -346,10 +355,10 @@ async def _load_below_fold(page) -> None:
     try:
         for frac in (0.3, 0.5, 0.7, 0.85, 1.0):
             await page.evaluate(
-                "window.scrollTo(0, Math.floor(document.body.scrollHeight*%s))" % frac
+                "window.scrollTo(0, Math.floor((document.body?document.body.scrollHeight:0)*%s))" % frac
             )
             await page.wait_for_timeout(900)
-        await page.evaluate("window.scrollTo(0, Math.floor(document.body.scrollHeight*0.6))")
+        await page.evaluate("window.scrollTo(0, Math.floor((document.body?document.body.scrollHeight:0)*0.6))")
         await page.wait_for_timeout(600)
     except Exception:
         pass
@@ -487,15 +496,24 @@ class ReviewScraper:
         async with self._session.lock:
             page = await self._session.page()
             await nav(page, f"https://{site}/dp/{asin}")
+            try:
+                await page.wait_for_selector("body", timeout=5000)
+            except Exception:
+                pass
             # The Rufus widget lazy-renders only when scrolled into view; jumping
             # to the bottom skips it. Step down gradually and stop as soon as it
-            # appears, then settle on it.
+            # appears. Each step is guarded: a transient page state (e.g. body
+            # briefly null mid-navigation) must not abort the whole Alex step —
+            # otherwise we'd skip the evidence screenshot entirely.
             for frac in (0.25, 0.4, 0.55, 0.7, 0.85, 1.0):
-                await page.evaluate(
-                    "window.scrollTo(0, Math.floor(document.body.scrollHeight*%s))" % frac
-                )
-                await page.wait_for_timeout(1100)
-                if await page.query_selector("#dpx-rex-nice-widget-container"):
+                try:
+                    await page.evaluate(
+                        "window.scrollTo(0, Math.floor((document.body?document.body.scrollHeight:0)*%s))" % frac
+                    )
+                    await page.wait_for_timeout(1100)
+                    if await page.query_selector("#dpx-rex-nice-widget-container"):
+                        break
+                except Exception:
                     break
             try:
                 await page.evaluate(_JS_SCROLL_ALEX)

@@ -47,8 +47,9 @@ import type {
   ReviewEngine,
   AccountStatus,
 } from '../types/settings';
+import PageHeader from '../components/layout/PageHeader';
 
-const { Title, Paragraph, Text } = Typography;
+const { Paragraph, Text } = Typography;
 
 const SITES = [
   { value: 'amazon.com', label: 'Amazon US (amazon.com)' },
@@ -258,11 +259,12 @@ export default function SettingsPage() {
   const chromeUnavailable = acc?.available === false;
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', paddingTop: 24 }}>
-      <Title level={3} style={{ marginBottom: 8 }}>配置中心</Title>
-      <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-        账号登录、抓取参数与文案模型的统一配置入口。登录在打开的真实 Chrome 窗口中手动完成，登录态记在本地 Chrome 配置里，用于抓取需要登录的竞品评论 / Rufus 问题。
-      </Paragraph>
+    <div style={{ maxWidth: 760, margin: '0 auto' }}>
+      <PageHeader
+        icon={<ApiOutlined />}
+        title="配置中心"
+        subtitle="账号登录、抓取参数与文案模型的统一配置入口。登录在打开的真实 Chrome 窗口中手动完成，登录态记在本地 Chrome 配置里，用于抓取需要登录的竞品评论 / Rufus 问题。"
+      />
 
       {/* --- Account & login --- */}
       <Card

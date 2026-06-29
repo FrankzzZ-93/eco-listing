@@ -9,6 +9,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -61,6 +62,17 @@ class SubmitReviewRequest(BaseModel):
 
 class UpdatePromptRequest(BaseModel):
     content: str
+
+
+class GenerateImagesRequest(BaseModel):
+    prompt: str
+    n: int = 1
+    size: str = "1024x1024"
+    quality: str = "high"
+    # Reference image URLs (e.g. "/artifacts/{run_id}/competitor_images/...") used
+    # to keep the generated product consistent. Resolved to local paths server-side.
+    reference_urls: list[str] = []
+    white_bg: bool = False
 
 
 # --- Endpoints ---
@@ -966,6 +978,123 @@ async def get_final(run_id: str):
             "markdown": f"/artifacts/{run_id}/final/final_listing.md",
         },
     }
+
+
+# --- Image generation endpoints ---
+#
+# A standalone subsystem decoupled from the LangGraph pipeline: it only needs a
+# run_id and (optional) reference images, and never touches the checkpoint state.
+# Images are generated via the codex CLI built-in `image_gen` tool (ChatGPT
+# OAuth, no API key) and persisted under artifacts/{run_id}/generated/.
+
+# Strong references to in-flight generation tasks (the event loop only keeps a
+# weak ref, so without this a fire-and-forget task can be GC'd mid-run).
+_image_job_tasks: set[asyncio.Task] = set()
+
+
+@router.post("/runs/{run_id}/images/generate")
+async def generate_run_images(run_id: str, req: GenerateImagesRequest):
+    """Kick off a generation job and return immediately.
+
+    Generation takes 1-3 minutes, so it runs as a persisted background job; the
+    client polls ``GET /images/jobs``. Validation happens synchronously here so
+    bad input still gets a 400.
+    """
+    from app.tools.file_store import from_artifact_url
+    from app.tools.image_jobs import create_job, run_job
+
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(400, "生图提示词不能为空")
+
+    ref_paths = [p for u in req.reference_urls if (p := from_artifact_url(u))]
+    params = {
+        "prompt": req.prompt.strip(),
+        "n": req.n,
+        "size": req.size,
+        "quality": req.quality,
+        "white_bg": req.white_bg,
+        "reference_urls": req.reference_urls,
+    }
+    job = await create_job(run_id, params)
+    # Fire-and-forget: the task persists its own outcome to the jobs sidecar.
+    # Hold a strong reference so the loop doesn't GC the task mid-run.
+    task = asyncio.create_task(run_job(run_id, job["id"], params, ref_paths))
+    _image_job_tasks.add(task)
+    task.add_done_callback(_image_job_tasks.discard)
+    return {"job": job}
+
+
+@router.get("/runs/{run_id}/images/jobs")
+async def list_run_image_jobs(run_id: str):
+    from app.tools.image_jobs import list_jobs
+
+    return {"jobs": list_jobs(run_id)}
+
+
+@router.post("/runs/{run_id}/images/upload-reference")
+async def upload_reference_image(run_id: str, file: UploadFile = File(...)):
+    """Save a user-uploaded reference image under the run's artifacts dir and
+    return its ``/artifacts`` URL, so it can be selected as a generation reference."""
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "仅支持 png/jpg/jpeg/webp 图片")
+    out_dir = os.path.join(settings.artifacts_dir, run_id, "ref_uploads")
+    os.makedirs(out_dir, exist_ok=True)
+    name = f"{int(datetime.datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}{ext}"
+    path = os.path.join(out_dir, name)
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    return {"name": name, "url": f"/artifacts/{run_id}/ref_uploads/{name}"}
+
+
+@router.get("/runs/{run_id}/images")
+async def list_run_images(run_id: str):
+    from app.tools.image_gen_tool import list_generated_images
+
+    return {"images": list_generated_images(run_id)}
+
+
+@router.get("/runs/{run_id}/images/export.zip")
+async def export_run_images(run_id: str):
+    import glob
+    import io
+    import zipfile
+
+    out_dir = os.path.join(settings.artifacts_dir, run_id, "generated")
+    files = sorted(glob.glob(os.path.join(out_dir, "*"))) if os.path.isdir(out_dir) else []
+    files = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+    if not files:
+        raise HTTPException(404, "暂无可下载的生成图片")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, arcname=os.path.basename(f))
+    buf.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{run_id}_images.zip"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+@router.get("/runs/{run_id}/competitor-images")
+async def list_competitor_images(run_id: str):
+    """List competitor product images captured during the listing scrape, grouped
+    by ASIN. They live under ``artifacts/{run_id}/competitor_images/{asin}/`` and
+    are served via ``/artifacts``; the image studio offers them as references."""
+    base = os.path.join(settings.artifacts_dir, run_id, "competitor_images")
+    groups: list[dict] = []
+    if os.path.isdir(base):
+        for asin in sorted(os.listdir(base)):
+            asin_dir = os.path.join(base, asin)
+            if not os.path.isdir(asin_dir):
+                continue
+            images = [
+                {"name": name, "url": f"/artifacts/{run_id}/competitor_images/{asin}/{name}"}
+                for name in sorted(os.listdir(asin_dir))
+                if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+            ]
+            if images:
+                groups.append({"asin": asin, "images": images})
+    return {"competitors": groups}
 
 
 # --- LLM Settings Endpoints ---

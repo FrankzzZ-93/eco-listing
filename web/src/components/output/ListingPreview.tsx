@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, Button, Space, Segmented, Empty, Typography, Descriptions, Tag, Popconfirm, message } from 'antd';
-import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, ReloadOutlined, PictureOutlined } from '@ant-design/icons';
 import SectionCard from './SectionCard';
 import CopyButton from './CopyButton';
 import { getByteLength, getCharLength } from '../../utils/byteCounter';
@@ -30,6 +31,7 @@ function makeAbsolute(path: string | undefined): string | undefined {
 
 export default function ListingPreview({ output, loading, runId, canRegenerate, regenerating, onRegenerate }: Props) {
   const [descView, setDescView] = useState<'preview' | 'source'>('preview');
+  const navigate = useNavigate();
 
   if (!output) {
     return <Empty description={loading ? '加载中…' : '最终 Listing 尚未生成'} />;
@@ -71,6 +73,17 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
         title={<Text strong>最终 Listing</Text>}
         extra={
           <Space>
+            {runId && (
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                icon={<PictureOutlined />}
+                onClick={() => navigate(`/run/${runId}/images`)}
+              >
+                生成商品图
+              </Button>
+            )}
             {onRegenerate && (
               <Popconfirm
                 title="重新生成 Listing 文案？"

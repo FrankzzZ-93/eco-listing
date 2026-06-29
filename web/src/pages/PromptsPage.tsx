@@ -1,22 +1,23 @@
 import { useState } from 'react';
 import { Card, Row, Col, Typography, Alert } from 'antd';
+import { SettingOutlined } from '@ant-design/icons';
 import PromptListPanel from '../components/prompts/PromptListPanel';
 import PromptEditor from '../components/prompts/PromptEditor';
+import PageHeader from '../components/layout/PageHeader';
 import { usePrompts } from '../hooks/usePrompts';
 import type { PromptMeta } from '../types/prompt';
-
-const { Title, Paragraph } = Typography;
 
 export default function PromptsPage() {
   const { prompts, refresh: refreshPrompts } = usePrompts();
   const [selectedPrompt, setSelectedPrompt] = useState<PromptMeta | null>(null);
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', paddingTop: 24 }}>
-      <Title level={3} style={{ marginBottom: 8 }}>提示词管理</Title>
-      <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-        在此修改各 Agent 使用的提示词模板。修改保存后，将在下次创建的任务中生效。
-      </Paragraph>
+    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <PageHeader
+        icon={<SettingOutlined />}
+        title="提示词管理"
+        subtitle="在此修改各 Agent 使用的提示词模板。修改保存后，将在下次创建的任务中生效。"
+      />
 
       <Alert
         message="提示词修改说明"

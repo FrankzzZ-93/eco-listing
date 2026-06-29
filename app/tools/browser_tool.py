@@ -55,15 +55,18 @@ class BrowserTool:
     def browser_act(self):
         return self.review_scraper
 
-    async def scrape_listing(self, asin: str, site: str) -> dict[str, Any]:
+    async def scrape_listing(self, asin: str, site: str, run_id: str | None = None) -> dict[str, Any]:
         """Get product listing content (title, bullets, description, A+).
 
         Tries Playwright first; falls back to Codex when:
         - Anti-scraping detected (CAPTCHA, sign-in redirect)
         - Result is too sparse (no bullet points extracted)
+
+        When ``run_id`` is given, the Playwright path also downloads the product
+        gallery images for later use as image-generation references.
         """
         try:
-            result = await self.scraper.get_listing(asin, site)
+            result = await self.scraper.get_listing(asin, site, run_id=run_id)
             # Quality check: if Playwright got title but no bullets, page structure is non-standard
             if result.get("title") and not result.get("bullet_points"):
                 logger.warning(

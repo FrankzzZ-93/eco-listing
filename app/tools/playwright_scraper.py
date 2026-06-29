@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import random
+import re
 from typing import Any
 
 from playwright.async_api import async_playwright, Page, Browser, TimeoutError as PwTimeout
@@ -12,6 +15,12 @@ from playwright.async_api import async_playwright, Page, Browser, TimeoutError a
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Strip an Amazon image size modifier (e.g. "._AC_US40_." / "._SX300_.") so the
+# thumbnail URL resolves to the full-resolution original.
+_AMZ_SIZE_RE = re.compile(r"\._[^./]+_\.")
+# Max competitor product images downloaded per ASIN.
+_MAX_COMPETITOR_IMAGES = 8
 
 
 class AntiScrapingError(Exception):
@@ -50,8 +59,13 @@ class PlaywrightScraper:
         page = await context.new_page()
         return page
 
-    async def get_listing(self, asin: str, site: str) -> dict[str, Any]:
-        """Scrape main listing content: title, bullet points, description."""
+    async def get_listing(self, asin: str, site: str, run_id: str | None = None) -> dict[str, Any]:
+        """Scrape main listing content: title, bullet points, description.
+
+        When ``run_id`` is given, also download the product gallery images to
+        ``artifacts/{run_id}/competitor_images/{asin}/`` so they can later be
+        used as references in the image-generation step.
+        """
         url = f"https://{site}/dp/{asin}"
         page = await self._new_page()
 
@@ -65,6 +79,14 @@ class PlaywrightScraper:
             description = await self._safe_text(page, "#productDescription")
             a_plus = await self._get_a_plus_content(page)
 
+            if run_id:
+                try:
+                    await self._download_product_images(page, run_id, asin)
+                except Exception:
+                    # Image capture is a best-effort side channel; never let it
+                    # break the listing scrape.
+                    logger.warning("competitor image download failed for %s", asin, exc_info=True)
+
             return {
                 "asin": asin,
                 "site": site,
@@ -75,6 +97,77 @@ class PlaywrightScraper:
             }
         finally:
             await page.close()
+
+    async def _get_main_image_urls(self, page: Page) -> list[str]:
+        """Collect distinct full-resolution product image URLs from the gallery.
+
+        Sources the main image's ``data-a-dynamic-image`` (already hi-res) plus
+        the ``#altImages`` thumbnails, normalizing each thumbnail URL to its
+        full-size original. Dedups by the Amazon image id.
+        """
+        urls: list[str] = []
+
+        landing = await page.query_selector("#landingImage, #imgTagWrapperId img")
+        if landing:
+            dyn = await landing.get_attribute("data-a-dynamic-image")
+            if dyn:
+                try:
+                    urls.extend(json.loads(dyn).keys())
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            src = await landing.get_attribute("src")
+            if src:
+                urls.append(src)
+
+        for thumb in await page.query_selector_all("#altImages img, #imageBlockThumbs img"):
+            src = await thumb.get_attribute("src")
+            if src:
+                urls.append(_AMZ_SIZE_RE.sub(".", src))
+
+        # Dedup by image id (the "I/XXXX" segment) while preserving order; skip
+        # sprites / 1x1 trackers that aren't real product photos.
+        seen: set[str] = set()
+        result: list[str] = []
+        for u in urls:
+            if not u.startswith("http") or "/captcha/" in u:
+                continue
+            key = _AMZ_SIZE_RE.sub(".", u)
+            ident = key.rsplit("/", 1)[-1]
+            if ident in seen:
+                continue
+            seen.add(ident)
+            result.append(key)
+        return result[:_MAX_COMPETITOR_IMAGES]
+
+    async def _download_product_images(self, page: Page, run_id: str, asin: str) -> list[str]:
+        """Download gallery images to the run's artifacts dir. Returns saved paths."""
+        urls = await self._get_main_image_urls(page)
+        if not urls:
+            return []
+
+        out_dir = os.path.join(settings.artifacts_dir, run_id, "competitor_images", asin)
+        os.makedirs(out_dir, exist_ok=True)
+        saved: list[str] = []
+        for i, u in enumerate(urls):
+            try:
+                resp = await page.context.request.get(u, timeout=15000)
+                if not resp.ok:
+                    continue
+                body = await resp.body()
+                if len(body) < 1024:  # skip tiny sprites / trackers
+                    continue
+                ext = "jpg"
+                m = re.search(r"\.(jpg|jpeg|png|webp)(?:$|\?)", u, re.IGNORECASE)
+                if m:
+                    ext = m.group(1).lower()
+                path = os.path.join(out_dir, f"{i}.{ext}")
+                with open(path, "wb") as f:
+                    f.write(body)
+                saved.append(path)
+            except Exception:
+                logger.debug("failed to download competitor image %s", u, exc_info=True)
+        logger.info("downloaded %d competitor images for %s", len(saved), asin)
+        return saved
 
     async def get_reviews(self, asin: str, site: str, max_pages: int = 3) -> list[dict[str, Any]]:
         """Scrape customer reviews from the reviews page."""

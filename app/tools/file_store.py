@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 
@@ -17,6 +19,23 @@ def to_artifact_url(image_path: str) -> str:
         return f"/artifacts/{rel}"
     except ValueError:
         return ""
+
+
+def from_artifact_url(url_or_path: str) -> str | None:
+    """Inverse of :func:`to_artifact_url`: resolve an ``/artifacts/...`` URL (or
+    artifacts-relative path) back to a local file path.
+
+    Guards against path traversal: the resolved path must stay within
+    ``artifacts_dir``. Returns ``None`` when empty, out of bounds, or missing.
+    """
+    if not url_or_path:
+        return None
+    rel = url_or_path[len("/artifacts/"):] if url_or_path.startswith("/artifacts/") else url_or_path
+    base = os.path.abspath(settings.artifacts_dir)
+    candidate = os.path.abspath(os.path.join(base, rel))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate if os.path.isfile(candidate) else None
 
 
 class FileStoreTool:

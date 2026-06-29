@@ -40,7 +40,7 @@ async def _scrape_asin(
 
     if do_listing:
         t1 = time.time()
-        result["listing"] = await browser.scrape_listing(asin, site)
+        result["listing"] = await browser.scrape_listing(asin, site, run_id=run_id)
         result["listing_ms"] = int((time.time() - t1) * 1000)
 
     if do_alex:

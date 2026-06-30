@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agents.copywriter import copywriter_node
+from app.errors import EcoListingError
 
 _BASE_STATE = {
     "run_id": "test_run",
@@ -64,6 +65,18 @@ async def test_copywriter_falls_back_when_round3_returns_empty(mock_toolbox):
     assert any(
         log.get("action") == "round_3_fallback" for log in result["agent_log"]
     )
+
+
+@pytest.mark.asyncio
+async def test_copywriter_raises_when_all_rounds_empty(mock_toolbox):
+    """Final non-empty guard: if every round AND every fallback is empty, the
+    node must raise (run marked 'failed') rather than silently shipping a blank
+    listing that gets marked 'completed'."""
+    empty = {"title": "", "bullet_points": [], "description": "", "search_terms": []}
+    mock_toolbox.llm.call = AsyncMock(return_value=dict(empty))
+
+    with pytest.raises(EcoListingError):
+        await copywriter_node(dict(_BASE_STATE), mock_toolbox)
 
 
 @pytest.mark.asyncio

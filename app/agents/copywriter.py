@@ -6,6 +6,7 @@ import time
 
 from app.agents.base import ToolBox
 from app.config import settings
+from app.errors import EcoListingError
 from app.llm_settings import PROVIDER_OPENAI_COMPATIBLE, get_listing_llm_config, is_configured
 from app.memory.schemas import ListingState
 from app.memory.shared_memory import MemoryHelper
@@ -298,23 +299,37 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         else:
             violations_ctx = "上一次违规：\n" + "\n".join(f"- {v}" for v in violations)
 
-    # Fallback chain when no clean+complete round-3 draft emerged: prefer the
-    # best complete round-3 attempt (length clamped below), else degrade to the
-    # round-2 draft, which is always complete. Never ship the raw last v3, since
-    # it may be the empty draft that caused this fallback.
+    # Fallback chain when no clean+complete round-3 draft emerged. Best first: a
+    # complete round-3 attempt (only length issues, clamped below), then round-2,
+    # then round-1. Every candidate is completeness-checked, so a blank draft can
+    # never become the shipped listing (the original bug: an empty round-3 result
+    # silently overwrote the good round-2 copy).
     if final is None:
-        if best_complete_v3 is not None:
-            final = best_complete_v3
-            fallback_to = "round_3_with_violations"
-        else:
-            final = v2
-            fallback_to = "round_2"
+        fallback_to = None
+        for label, cand in (
+            ("round_3_with_violations", best_complete_v3),
+            ("round_2", v2),
+            ("round_1", v1),
+        ):
+            if cand is not None and _is_complete_listing(cand):
+                final = cand
+                fallback_to = label
+                break
         logs.append(
             MemoryHelper.log_action(
                 "copywriter",
                 "round_3_fallback",
-                fallback_to=fallback_to,
+                fallback_to=fallback_to or "none",
             )
+        )
+
+    # Final non-empty guard: if every round AND every fallback produced an
+    # empty/incomplete draft, fail loudly. Shipping a blank listing here is what
+    # let a broken run get marked "completed" with empty title/bullets/description.
+    if final is None or not _is_complete_listing(final):
+        raise EcoListingError(
+            "Copywriter 生成的文案为空（title/bullet_points/description 至少一项为空），"
+            "且三轮草稿均无可用回退稿。拒绝导出空 listing。"
         )
 
     # Deterministic safety net: the LLM loop ships its last draft even when

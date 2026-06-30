@@ -12,7 +12,9 @@
 - **前端**：React + TypeScript + Vite + Ant Design。
 - **LLM**：默认通过本机 **Codex CLI**（`codex exec`）调用，用 Codex 本地登录态，**不依赖 `.env` API Key**（文案环节可在配置中心改用 OpenAI 兼容 API）。
 - **登录态网页抓取**：竞品评论 / Rufus（Alex）问题用**本机真实 Google Chrome**（Playwright `channel="chrome"` 驱动，免费、过反爬，替换原付费 browser-act）；复杂或兜底场景回退到 Codex 驱动的浏览器。抓取竞品 Listing 时一并下载主图，供生图作参考。
-- **AI 商品图生成**：在「最终产出」页可进入「商品图生成」，通过 **Codex 内置 `image_gen` 工具**出图（同样走 Codex 登录态，**无需额外 API Key 或依赖**）。支持参考图（竞品图 / 上传 / 已生成图）保证产品一致、纯白底主图（绿幕 chroma-key）、异步任务（刷新不丢、历史任务）、批量下载。图片落盘到 `artifacts/runs/<run_id>/generated/`。
+- **AI 商品图生成**：在「最终产出」页可进入「商品图生成」，通过 **Codex 内置 `image_gen` 工具**出图（同样走 Codex 登录态，**无需额外 API Key**）。支持参考图（竞品图 / 上传 / 已生成图）保证产品一致、纯白底主图（绿幕 chroma-key）、异步任务（刷新不丢、历史任务）、批量下载。图片落盘到 `artifacts/runs/<run_id>/generated/`。
+  - **白底（chroma-key）依赖**：白底主图的去背处理由仓库自带脚本 `scripts/remove_chroma_key.py` 完成（已 vendoring，**不依赖 codex 自带 skill**），由后端 venv 的 Python 以绝对路径调用，跨平台一致——因此 **`requirements.txt` 含 `Pillow`，务必 `pip install -r requirements.txt`**。早期版本用 `${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/...` 的 bash 展开，在 Windows 原生 shell 下会失败（出图但白底后处理无产出）。
+  - **失败可诊断**：任意生图失败都会把「提示词 + codex 完整输出 / 报错」落盘成 `artifacts/runs/<run_id>/generated/imagegen_<job>.log`，前端失败卡片提供「下载完整报错日志」链接。
 - **持久化**：SQLite（`checkpoints.db`，**任务列表与状态的唯一真相来源**）+ 本地文件（`artifacts/runs/`）。无需外部数据库，也无独立的任务索引文件。
 
 > 架构要点：前端（:3000）把 `/api`、`/artifacts` 反向代理到后端（:8000）。后端进程内常驻 LangGraph 图与浏览器实例；每个任务的状态由 LangGraph 的 SQLite checkpointer 持久化。
@@ -297,6 +299,7 @@ eco_listing/
 | 现象 | 原因 / 解决 |
 |---|---|
 | 生成阶段报 `CodexExecError` / `CodexExecTimeout` | 未 `codex login`，或任务过长。先确认 `~/.codex/auth.json` 存在；必要时调大 `CODEX_TIMEOUT`。 |
+| 生图报「codex 未产出任何图片文件」 | 点失败卡片「下载完整报错日志」（`generated/imagegen_*.log`）看 codex 实际输出。白底任务最常见是 **Pillow 未装**（`pip install -r requirements.txt`）或 `scripts/remove_chroma_key.py` 缺失；先关掉「白底」生一张排除 chroma-key 环节；普通图也失败则多为 codex 未登录/版本问题。 |
 | 抓取竞品失败 / 找不到浏览器 | 未执行 `playwright install chromium`。 |
 | 前端能打开但接口 404/502 | 后端没在 :8000 运行，或端口被占用。确认后端日志，或 `lsof -ti:8000` 查占用。 |
 | `python: command not found` | 用 `python3`；并确认已 `source .venv/bin/activate`。 |

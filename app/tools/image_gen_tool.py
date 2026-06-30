@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from typing import Optional
 
@@ -24,6 +25,28 @@ from app.tools.codex_exec import CodexExecError, codex_exec
 from app.tools.file_store import to_artifact_url
 
 logger = logging.getLogger(__name__)
+
+# Repo-vendored chroma-key helper (scripts/remove_chroma_key.py). Referenced by
+# absolute path + the backend's own interpreter so the white-bg step does not
+# rely on codex's bundled skill or on bash-only shell expansion (broke on
+# Windows). image_gen_tool.py lives at app/tools/, so repo root is three up.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REMOVE_CHROMA_KEY_SCRIPT = os.path.join(_REPO_ROOT, "scripts", "remove_chroma_key.py")
+# Absolute path to the running backend's Python (has Pillow); falls back to
+# "python3" on the PATH if sys.executable is somehow empty.
+_PYTHON = sys.executable or "python3"
+
+
+class ImageGenError(RuntimeError):
+    """An image-generation failure that carries a downloadable full-detail log.
+
+    ``log_url`` points at an ``/artifacts/...`` text file holding the prompt and
+    the complete codex output/traceback, so a failure on another machine can be
+    diagnosed end-to-end (the inline message is kept short for the UI)."""
+
+    def __init__(self, message: str, log_url: Optional[str] = None):
+        super().__init__(message)
+        self.log_url = log_url
 
 # 内置 image_gen 工具支持的尺寸（gpt-image-2）。前端只暴露常用几档。
 ALLOWED_SIZES = {
@@ -44,6 +67,19 @@ def _generated_dir(run_id: str) -> str:
     d = os.path.join(settings.artifacts_dir, run_id, "generated")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _write_failure_log(run_id: str, name: str, content: str) -> str:
+    """Persist a full image-gen failure report under the run's generated dir and
+    return its ``/artifacts`` URL (served statically, so it's downloadable)."""
+    path = os.path.join(_generated_dir(run_id), f"imagegen_{name}.log")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except OSError:
+        logger.warning("could not write image-gen failure log %s", path, exc_info=True)
+        return ""
+    return to_artifact_url(path)
 
 
 def _build_prompt(
@@ -88,8 +124,9 @@ def _build_prompt(
             " (use #ff00ff instead if the product itself is green/teal). No shadows, gradients,"
             " texture, reflections, floor plane, or lighting variation; crisp edges; generous"
             " padding; never use the key color anywhere in the product.",
-            '  2. Remove the key color locally with the installed helper:'
-            ' python "${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py"'
+            '  2. Remove the key color locally by running this EXACT command (absolute paths,'
+            " works on any OS — do NOT substitute a different python or script path):",
+            f'     "{_PYTHON}" "{REMOVE_CHROMA_KEY_SCRIPT}"'
             " --input <generated> --out <cutout.png> --auto-key border --soft-matte --despill",
             "  3. Composite the cutout onto a solid #FFFFFF background (flatten the alpha) and save"
             " the FINAL flattened white-background image to the target path below. No props, no"
@@ -149,6 +186,7 @@ async def generate_images(
     quality: str = DEFAULT_QUALITY,
     reference_paths: Optional[list[str]] = None,
     white_bg: bool = False,
+    job_id: Optional[str] = None,
 ) -> list[str]:
     """生成 ``n`` 张图片，返回可访问的 ``/artifacts`` URL 列表。
 
@@ -160,11 +198,12 @@ async def generate_images(
         quality: 出图质量（见 ALLOWED_QUALITIES）。
         reference_paths: 参考图的本地绝对路径（用于产品一致性）。
         white_bg: 是否要求纯白底（亚马逊主图）。
+        job_id: 关联的图片任务 id（仅用于命名失败日志）。
 
     Raises:
         ValueError: 入参非法。
-        CodexExecError: codex 子进程失败。
-        RuntimeError: codex 未产出任何图片文件。
+        ImageGenError: codex 子进程失败 / 未产出图片 / 白底脚本缺失；``.log_url``
+            指向落盘的完整报错日志。
     """
     if not prompt or not prompt.strip():
         raise ValueError("生图提示词不能为空")
@@ -177,7 +216,17 @@ async def generate_images(
     refs = [p for p in (reference_paths or []) if p and os.path.isfile(p)]
     out_dir = _generated_dir(run_id)
     ts = int(time.time())
+    log_name = job_id or str(ts)
     target_paths = [os.path.join(out_dir, f"{ts}_{i + 1}.png") for i in range(n)]
+
+    # White-bg needs the vendored chroma-key helper. Fail fast with a precise,
+    # logged error if it's missing rather than letting codex silently produce
+    # nothing (the original Windows failure mode).
+    if white_bg and not os.path.isfile(REMOVE_CHROMA_KEY_SCRIPT):
+        msg = f"白底后处理脚本缺失：{REMOVE_CHROMA_KEY_SCRIPT}（请确认仓库 scripts/ 完整）"
+        log_url = _write_failure_log(run_id, log_name, msg)
+        logger.error("image_gen white_bg helper missing run=%s: %s", run_id, REMOVE_CHROMA_KEY_SCRIPT)
+        raise ImageGenError(msg, log_url=log_url)
 
     codex_prompt = _build_prompt(
         prompt,
@@ -189,10 +238,23 @@ async def generate_images(
     )
 
     logger.info(
-        "image_gen start run=%s n=%d size=%s quality=%s refs=%d white_bg=%s",
-        run_id, n, size, quality, len(refs), white_bg,
+        "image_gen start run=%s job=%s n=%d size=%s quality=%s refs=%d white_bg=%s",
+        run_id, log_name, n, size, quality, len(refs), white_bg,
     )
-    raw = await codex_exec(codex_prompt)
+
+    try:
+        raw = await codex_exec(codex_prompt)
+    except CodexExecError as e:
+        # codex 子进程本身失败（二进制缺失 / 未登录 / 非零退出 / 超时）。把完整
+        # 报错连同提示词落盘成可下载日志，inline 只留简短信息。
+        detail = (
+            f"image_gen run={run_id} job={log_name} white_bg={white_bg}\n"
+            f"=== ERROR ===\n{type(e).__name__}: {e}\n\n"
+            f"=== PROMPT ===\n{codex_prompt}\n"
+        )
+        log_url = _write_failure_log(run_id, log_name, detail)
+        logger.error("image_gen codex_exec failed run=%s job=%s: %s", run_id, log_name, e, exc_info=True)
+        raise ImageGenError(f"codex 生图子进程失败：{type(e).__name__}: {e}", log_url=log_url) from e
 
     # 优先以"我们指定的目标路径是否真的落盘"为准（最稳），其次回退到 JSON 解析。
     produced = [p for p in target_paths if os.path.isfile(p)]
@@ -202,11 +264,30 @@ async def generate_images(
                 produced.append(p)
 
     if not produced:
-        logger.error("image_gen produced no files run=%s; tail=%s", run_id, raw[-500:])
-        raise RuntimeError("codex 未产出任何图片文件，请重试或调整提示词")
+        # codex 正常退出但没有图片落盘——常见于白底后处理脚本/路径出错。把 codex 的
+        # 完整输出 + 提示词落盘成可下载日志，方便在其他设备（含 Windows）排查。
+        detail = (
+            f"image_gen run={run_id} job={log_name} white_bg={white_bg}\n"
+            f"=== RESULT ===\ncodex 正常退出 (rc=0) 但目标路径无图片落盘。\n"
+            f"target_paths:\n" + "\n".join(f"  - {p}" for p in target_paths) + "\n\n"
+            f"=== PROMPT ===\n{codex_prompt}\n\n"
+            f"=== CODEX FULL OUTPUT ({len(raw)} chars) ===\n{raw}\n"
+        )
+        log_url = _write_failure_log(run_id, log_name, detail)
+        tail = raw[-600:].strip() or "(codex 无输出)"
+        logger.error(
+            "image_gen produced no files run=%s job=%s white_bg=%s; tail=%s",
+            run_id, log_name, white_bg, tail,
+        )
+        hint = (
+            "codex 正常退出但未产出图片。"
+            + ("常见原因：白底后处理脚本执行失败（缺 Pillow 或路径错）。" if white_bg else "可能 codex 未实际调用 image_gen 工具。")
+            + f" codex 输出末尾：\n{tail}"
+        )
+        raise ImageGenError(hint, log_url=log_url)
 
     urls = [to_artifact_url(p) for p in produced]
-    logger.info("image_gen done run=%s produced=%d", run_id, len(urls))
+    logger.info("image_gen done run=%s job=%s produced=%d", run_id, log_name, len(urls))
     return urls
 
 

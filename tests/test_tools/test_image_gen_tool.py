@@ -56,6 +56,68 @@ def test_build_prompt_includes_reference_and_white_bg_sections():
     assert "remove_chroma_key.py" in p
 
 
+def test_build_prompt_white_bg_uses_vendored_script_and_no_bash_expansion():
+    """Regression (Windows): the chroma-key step must reference the repo-vendored
+    script by absolute path + the backend's own Python, with NO bash-only
+    ``${CODEX_HOME:-$HOME/.codex}`` expansion that breaks on a Windows shell."""
+    p = ig._build_prompt(
+        "a mug",
+        target_paths=["/tmp/1.png"],
+        size="auto",
+        quality="high",
+        reference_paths=[],
+        white_bg=True,
+    )
+    assert ig.REMOVE_CHROMA_KEY_SCRIPT in p  # absolute, vendored path
+    assert ig._PYTHON in p  # backend interpreter (has Pillow)
+    assert "${CODEX_HOME" not in p and "$HOME/.codex" not in p
+
+
+@pytest.mark.asyncio
+async def test_generate_images_raises_with_downloadable_log_when_no_files(tmp_path, monkeypatch):
+    """When codex exits cleanly but produces no image, fail with ImageGenError
+    carrying a log_url, and physically write the full report (prompt + codex
+    output) so the failure is diagnosable on another machine."""
+    monkeypatch.setattr(ig.settings, "artifacts_dir", str(tmp_path))
+
+    async def _fake_codex_exec(_prompt, **_kw):
+        return "no json here\nstill nothing"
+
+    monkeypatch.setattr(ig, "codex_exec", _fake_codex_exec)
+
+    with pytest.raises(ig.ImageGenError) as ei:
+        await ig.generate_images("run1", "a red mug", n=1, white_bg=False, job_id="job123")
+
+    assert ei.value.log_url  # a downloadable detail log
+    log_file = tmp_path / "run1" / "generated" / "imagegen_job123.log"
+    assert log_file.is_file()
+    body = log_file.read_text(encoding="utf-8")
+    assert "CODEX FULL OUTPUT" in body and "a red mug" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_images_white_bg_missing_script_fails_fast(tmp_path, monkeypatch):
+    """White-bg with the vendored helper missing must fail fast with a clear,
+    logged ImageGenError rather than silently calling codex and getting nothing."""
+    monkeypatch.setattr(ig.settings, "artifacts_dir", str(tmp_path))
+    monkeypatch.setattr(ig, "REMOVE_CHROMA_KEY_SCRIPT", str(tmp_path / "nonexistent.py"))
+
+    called = {"codex": False}
+
+    async def _fake_codex_exec(_prompt, **_kw):
+        called["codex"] = True
+        return ""
+
+    monkeypatch.setattr(ig, "codex_exec", _fake_codex_exec)
+
+    with pytest.raises(ig.ImageGenError) as ei:
+        await ig.generate_images("run1", "a mug", white_bg=True, job_id="jobwb")
+
+    assert "脚本缺失" in str(ei.value)
+    assert called["codex"] is False  # never reached codex
+    assert ei.value.log_url
+
+
 def test_parse_saved_paths_reads_last_agent_message_json():
     raw = "\n".join([
         json.dumps({"type": "turn.started"}),

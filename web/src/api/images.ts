@@ -23,6 +23,7 @@ export interface ImageJob {
   reference_urls: string[];
   images: string[]; // result image URLs
   error: string | null;
+  error_log?: string | null; // /artifacts URL of a full failure report (when failed)
   created_at: number;
   updated_at: number;
 }

@@ -347,7 +347,23 @@ export default function ImageStudio() {
             <Spin size="small" /> <Text type="secondary">生成中（约 1-3 分钟）…</Text>
           </div>
         )}
-        {job.status === 'failed' && <Alert type="error" showIcon message="生成失败" description={job.error || '未知错误'} />}
+        {job.status === 'failed' && (
+          <Alert
+            type="error"
+            showIcon
+            message="生成失败"
+            description={
+              <div>
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{job.error || '未知错误'}</div>
+                {job.error_log && (
+                  <a href={job.error_log} target="_blank" rel="noreferrer" download style={{ display: 'inline-block', marginTop: 6 }}>
+                    下载完整报错日志
+                  </a>
+                )}
+              </div>
+            }
+          />
+        )}
         {job.status === 'completed' && job.images.length > 0 && (
           <Image.PreviewGroup>
             <Space wrap size={[10, 10]}>

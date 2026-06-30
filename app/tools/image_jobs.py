@@ -100,6 +100,7 @@ async def create_job(run_id: str, params: dict) -> dict:
         "reference_urls": params.get("reference_urls", []),
         "images": [],
         "error": None,
+        "error_log": None,  # /artifacts URL of a full failure report, when failed
         "created_at": time.time(),
         "updated_at": time.time(),
     }
@@ -132,8 +133,12 @@ async def run_job(run_id: str, job_id: str, params: dict, reference_paths: list[
             quality=params.get("quality", "high"),
             reference_paths=reference_paths,
             white_bg=params.get("white_bg", False),
+            job_id=job_id,
         )
         await _update_job(run_id, job_id, status="completed", images=urls)
     except Exception as e:
+        # Persist the full error + a link to the downloadable detail log (set by
+        # ImageGenError) so a failure on another machine is fully diagnosable.
+        log_url = getattr(e, "log_url", None)
         logger.error("image job %s failed for run %s", job_id, run_id, exc_info=True)
-        await _update_job(run_id, job_id, status="failed", error=str(e))
+        await _update_job(run_id, job_id, status="failed", error=str(e), error_log=log_url)

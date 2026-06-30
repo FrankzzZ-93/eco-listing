@@ -116,3 +116,18 @@ export async function getFinal(runId: string): Promise<FinalOutput> {
   const res = await client.get<FinalOutput>(`/runs/${runId}/final`);
   return res.data;
 }
+
+// Download the full execution log (agent_log) for a run and trigger a browser
+// "save file" for offline debugging of failures on other machines.
+export async function downloadRunLog(runId: string): Promise<void> {
+  const res = await client.get(`/runs/${runId}/log`, { responseType: 'text' });
+  const blob = new Blob([res.data], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${runId}_log.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

@@ -9,7 +9,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -303,6 +303,80 @@ async def get_run(run_id: str):
         "research_progress": research_progress,
         "stage_progress": stage_progress,
     }
+
+
+def _format_log_entry(entry: dict) -> str:
+    """Render one agent_log entry as a readable, single-or-multi line block.
+
+    The status payload only keeps the last 20 entries; this is the full log
+    downloaded for offline debugging, so include every diagnostic field
+    (duration, error message, traceback) rather than truncating.
+    """
+    ts = entry.get("timestamp", "")
+    agent = entry.get("agent", "?")
+    action = entry.get("action", "")
+    status = entry.get("status", "")
+    duration = entry.get("duration_ms")
+
+    parts = [f"[{ts}]", f"{agent}", f"| {action}"]
+    if status:
+        parts.append(f"({status})")
+    if isinstance(duration, (int, float)) and duration > 0:
+        parts.append(f"{duration / 1000:.1f}s")
+    line = " ".join(parts)
+
+    error = entry.get("error")
+    traceback = entry.get("traceback")
+    if error:
+        line += f"\n    ERROR: {error}"
+    if traceback:
+        indented = "\n".join("    " + ln for ln in str(traceback).splitlines())
+        line += f"\n{indented}"
+
+    # Surface any remaining non-standard keys so the log is self-contained.
+    known = {"timestamp", "agent", "action", "status", "duration_ms", "error", "traceback"}
+    extras = {k: v for k, v in entry.items() if k not in known}
+    if extras:
+        line += "\n    " + json.dumps(extras, ensure_ascii=False, default=str)
+    return line
+
+
+@router.get("/runs/{run_id}/log")
+async def download_run_log(run_id: str):
+    """Download the full execution log (agent_log) for a run as a text file.
+
+    Surfaced as a button on the run detail page so a failing run on another
+    machine can be diagnosed without shell access to the checkpoint DB.
+    """
+    graph = _get_graph()
+    config = {"configurable": {"thread_id": run_id}}
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(404, "Run not found")
+
+    snapshot = state.values
+    logs = snapshot.get("agent_log", []) or []
+
+    header = [
+        f"Run ID      : {run_id}",
+        f"Product     : {snapshot.get('product_name', '') or '-'}",
+        f"Status      : {snapshot.get('status', '') or '-'}",
+        f"ASINs       : {', '.join(snapshot.get('competitor_asins', []) or []) or '-'}",
+        f"Log entries : {len(logs)}",
+        f"Exported at : {datetime.datetime.utcnow().isoformat()}Z",
+    ]
+    if snapshot.get("error"):
+        header.append(f"Last error  : {snapshot.get('error')}")
+
+    body = "\n".join(_format_log_entry(e) for e in logs) if logs else "(no log entries)"
+    text = "\n".join(header) + "\n" + "=" * 60 + "\n" + body + "\n"
+
+    return PlainTextResponse(
+        text,
+        headers={
+            "Content-Disposition": f'attachment; filename="{run_id}_log.txt"',
+        },
+    )
 
 
 _VIEWABLE_KEYS = frozenset([

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Layout, Tabs, Card, Spin, Typography, Alert, Button, Space, Modal, message, notification, Result, Descriptions, Tag, Progress } from 'antd';
-import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PauseCircleOutlined, StopOutlined, PlayCircleOutlined, CheckCircleFilled, FileTextOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons';
 import PipelineSidebar from '../components/pipeline/PipelineSidebar';
 import AgentLogTable from '../components/status/AgentLogTable';
 import ScrapeScreenshots from '../components/status/ScrapeScreenshots';
@@ -14,7 +14,7 @@ import ClassifiedKeywordsReviewPanel from '../components/review/ClassifiedKeywor
 import ListingPreview from '../components/output/ListingPreview';
 import CaptchaModal from '../components/common/CaptchaModal';
 import { useRunStatus } from '../hooks/useRunStatus';
-import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun, regenerateListing, updateProductName } from '../api/runs';
+import { getFinal, pauseRun, resumeRun, stopRun, submitCaptcha, deleteRun, regenerateListing, updateProductName, downloadRunLog } from '../api/runs';
 import type { FinalOutput } from '../types/listing';
 
 const { Sider, Content } = Layout;
@@ -453,7 +453,23 @@ export default function RunDashboard() {
                             style={{ marginBottom: 16 }}
                           />
                         )}
-                      <Title level={5}>执行日志</Title>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <Title level={5} style={{ margin: 0 }}>执行日志</Title>
+                        <Button
+                          size="small"
+                          icon={<DownloadOutlined />}
+                          onClick={async () => {
+                            if (!runId) return;
+                            try {
+                              await downloadRunLog(runId);
+                            } catch {
+                              message.error('下载日志失败');
+                            }
+                          }}
+                        >
+                          下载日志
+                        </Button>
+                      </div>
                       {run?.status === 'running' && run.research_progress && (
                         <ResearchProgressBanner progress={run.research_progress} />
                       )}

@@ -16,6 +16,7 @@
   - **白底（chroma-key）依赖**：白底主图的去背处理由仓库自带脚本 `scripts/remove_chroma_key.py` 完成（已 vendoring，**不依赖 codex 自带 skill**），由后端 venv 的 Python 以绝对路径调用，跨平台一致——因此 **`requirements.txt` 含 `Pillow`，务必 `pip install -r requirements.txt`**。早期版本用 `${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/...` 的 bash 展开，在 Windows 原生 shell 下会失败（出图但白底后处理无产出）。
   - **失败可诊断**：任意生图失败都会把「提示词 + codex 完整输出 / 报错」落盘成 `artifacts/runs/<run_id>/generated/imagegen_<job>.log`，前端失败卡片提供「下载完整报错日志」链接。
 - **持久化**：SQLite（`checkpoints.db`，**任务列表与状态的唯一真相来源**）+ 本地文件（`artifacts/runs/`）。无需外部数据库，也无独立的任务索引文件。
+- **任务执行日志下载**：任务详情页「执行日志」区有「下载日志」按钮，导出该任务**完整的** `agent_log`（含每步耗时、报错与 traceback）为 txt，方便在其他设备运行出问题时离线排查。
 
 > 架构要点：前端（:3000）把 `/api`、`/artifacts` 反向代理到后端（:8000）。后端进程内常驻 LangGraph 图与浏览器实例；每个任务的状态由 LangGraph 的 SQLite checkpointer 持久化。
 
@@ -32,6 +33,7 @@
 | Codex CLI | **codex-cli 0.13+**（已在 0.134.0 验证） | 实际的 LLM / 浏览器 Agent 后端，**必须登录** |
 | **Google Chrome（真实）** | 本机安装 + `playwright install chrome` | **登录态抓取竞品评论 / Rufus 的主引擎**（真实 Chrome，免费、过反爬） |
 | Playwright | 随 `pip install -r requirements.txt` | 驱动真实 Chrome；内置 Chromium 作降级 |
+| Pillow | 随 `pip install -r requirements.txt` | **白底主图去背**（`scripts/remove_chroma_key.py`）所需；缺失会导致白底生图失败 |
 
 ### 2.1 安装系统级工具
 
@@ -306,6 +308,8 @@ eco_listing/
 | Windows 下进程无法终止/报错 | 代码依赖 POSIX 进程组，请在 **WSL2** 内部署。 |
 | 端口 3000/8000 被占用 | 改端口：后端 `--port`，前端在 `vite.config.ts` 改 `server.port`（同时改代理 target）。 |
 | 任务上传多个文件后丢失 | 已修复（前端顺序上传 + 后端按 run 加锁）；如自定义客户端，请勿并发上传同一 run。 |
+| 任务显示完成但 Listing 标题/五点/描述为空 | 已修复：第 3 轮合规校正若返回空文案，会回退到上一份完整草稿；全空则任务直接标记 `failed` 而非静默完成。排查可在详情页「下载日志」看 `round_3_fallback` / 报错。 |
+| 排查其他设备上的任务异常 | 任务详情页「执行日志」→「下载日志」导出完整 `agent_log`（含报错 traceback）；生图问题另见失败卡片「下载完整报错日志」。 |
 
 ---
 

@@ -28,6 +28,25 @@ def _resolve_limits(state: ListingState) -> dict:
     return {k: limits.get(k, default) for k, default in _LIMIT_DEFAULTS.items()}
 
 
+def _is_complete_listing(listing: dict) -> bool:
+    """True only if title, bullet points, and description all carry real content.
+
+    The round-3 compliance LLM occasionally returns a structurally valid but
+    empty draft (all fields ``""``/``[]``). Such a draft passes length
+    validation (nothing is over-limit), so without this guard it would be
+    accepted and silently overwrite the good round-2 copy with a blank listing.
+    """
+    if not isinstance(listing, dict):
+        return False
+    title = (listing.get("title") or "").strip()
+    desc = (listing.get("description") or "").strip()
+    bullets = listing.get("bullet_points") or []
+    has_bullets = isinstance(bullets, list) and any(
+        isinstance(b, str) and b.strip() for b in bullets
+    )
+    return bool(title) and bool(desc) and has_bullets
+
+
 def _trim_to_chars(text: str, max_chars: int) -> str:
     """Trim plain text to ``max_chars``, preferring a word boundary."""
     if len(text) <= max_chars:
@@ -210,6 +229,10 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     eff_limits = _resolve_limits(state)
     violations_ctx = ""
     final = None
+    # Best complete-but-not-yet-clean round-3 draft seen so far; used as a
+    # fallback before degrading to round 2, so we keep round-3 improvements
+    # whenever the model produced real content (length is clamped below).
+    best_complete_v3 = None
     MAX_RETRIES = settings.copywriter_max_retries
 
     for attempt in range(MAX_RETRIES + 1):
@@ -237,6 +260,13 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         )
         v3 = await toolbox.llm.call("claude-sonnet", p3, llm_config=llm_cfg)
 
+        # An empty/incomplete draft must never be accepted: it would pass length
+        # validation (nothing over-limit) yet ship a blank listing. Treat it as a
+        # violation so the loop retries, and never let it become ``final``.
+        complete = _is_complete_listing(v3)
+        if complete:
+            best_complete_v3 = v3
+
         listing_for_check = {
             "title": v3.get("title", ""),
             "bullet_points": v3.get("bullet_points", []),
@@ -251,18 +281,41 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
                 "round_3_compliance",
                 attempt=attempt,
                 violations=len(violations),
+                empty=not complete,
                 duration_ms=int((time.time() - t0) * 1000),
             )
         )
 
-        if not violations:
+        if complete and not violations:
             final = v3
             break
 
-        violations_ctx = "上一次违规：\n" + "\n".join(f"- {v}" for v in violations)
+        if not complete:
+            violations_ctx = (
+                "上一次返回了空文案（title/bullet_points/description 至少一项为空）。"
+                "必须返回完整的非空文案。"
+            )
+        else:
+            violations_ctx = "上一次违规：\n" + "\n".join(f"- {v}" for v in violations)
 
+    # Fallback chain when no clean+complete round-3 draft emerged: prefer the
+    # best complete round-3 attempt (length clamped below), else degrade to the
+    # round-2 draft, which is always complete. Never ship the raw last v3, since
+    # it may be the empty draft that caused this fallback.
     if final is None:
-        final = v3
+        if best_complete_v3 is not None:
+            final = best_complete_v3
+            fallback_to = "round_3_with_violations"
+        else:
+            final = v2
+            fallback_to = "round_2"
+        logs.append(
+            MemoryHelper.log_action(
+                "copywriter",
+                "round_3_fallback",
+                fallback_to=fallback_to,
+            )
+        )
 
     # Deterministic safety net: the LLM loop ships its last draft even when
     # length violations remain, so hard-clamp the binding maximums here to

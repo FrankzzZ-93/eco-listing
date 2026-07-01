@@ -301,7 +301,7 @@ eco_listing/
 | 现象 | 原因 / 解决 |
 |---|---|
 | 生成阶段报 `CodexExecError` / `CodexExecTimeout` | 未 `codex login`，或任务过长。先确认 `~/.codex/auth.json` 存在；必要时调大 `CODEX_TIMEOUT`。 |
-| 生图报「codex 未产出任何图片文件」 | 点失败卡片「下载完整报错日志」（`generated/imagegen_*.log`）看 codex 实际输出。白底任务最常见是 **Pillow 未装**（`pip install -r requirements.txt`）或 `scripts/remove_chroma_key.py` 缺失；先关掉「白底」生一张排除 chroma-key 环节；普通图也失败则多为 codex 未登录/版本问题。 |
+| 生图报「codex 未产出任何图片文件」 | 点失败卡片「下载完整报错日志」（`generated/imagegen_*.log`）看 codex 实际输出。① 日志含 `Read-only file system`：codex 沙箱只读挡住写盘——已修复（生图调用改用 `--sandbox workspace-write` + `--add-dir <输出目录>`）；若仍报只读，升级 codex 或检查其沙箱/审批配置。② 白底相关报错：**Pillow 未装**（`pip install -r requirements.txt`）或 `scripts/remove_chroma_key.py` 缺失；先关掉「白底」生一张排除 chroma-key 环节。③ 普通图也失败：多为 codex 未登录/版本问题。 |
 | 抓取竞品失败 / 找不到浏览器 | 未执行 `playwright install chromium`。 |
 | 前端能打开但接口 404/502 | 后端没在 :8000 运行，或端口被占用。确认后端日志，或 `lsof -ti:8000` 查占用。 |
 | `python: command not found` | 用 `python3`；并确认已 `source .venv/bin/activate`。 |

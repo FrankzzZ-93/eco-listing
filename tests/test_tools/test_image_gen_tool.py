@@ -4,6 +4,7 @@ The codex-driven generation path needs a live codex CLI, so it's exercised by a
 manual spike rather than here; these cover the deterministic logic only.
 """
 import json
+import os
 
 import pytest
 
@@ -93,6 +94,29 @@ async def test_generate_images_raises_with_downloadable_log_when_no_files(tmp_pa
     assert log_file.is_file()
     body = log_file.read_text(encoding="utf-8")
     assert "CODEX FULL OUTPUT" in body and "a red mug" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_images_uses_workspace_write_sandbox(tmp_path, monkeypatch):
+    """Codex's default read-only sandbox blocks the shell step from saving the
+    image (observed 'Read-only file system'). Generation must request
+    ``workspace-write`` and hand codex the output dir as a writable root."""
+    monkeypatch.setattr(ig.settings, "artifacts_dir", str(tmp_path))
+    captured: dict = {}
+
+    async def _fake_codex_exec(_prompt, **kw):
+        captured.update(kw)
+        return "no files produced"
+
+    monkeypatch.setattr(ig, "codex_exec", _fake_codex_exec)
+
+    with pytest.raises(ig.ImageGenError):
+        await ig.generate_images("run1", "a mug", white_bg=False, job_id="j")
+
+    assert captured.get("sandbox") == "workspace-write"
+    roots = captured.get("writable_roots") or []
+    assert roots and all(os.path.isabs(r) for r in roots)
+    assert os.path.abspath(str(tmp_path)) in roots[0]  # the run's output dir
 
 
 @pytest.mark.asyncio

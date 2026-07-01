@@ -151,7 +151,13 @@ def _make_progress_callback(run_id: Optional[str]) -> Optional[Callable[[bytes],
     return _on_line
 
 
-async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
+async def codex_exec(
+    prompt: str,
+    *,
+    timeout: int | None = None,
+    sandbox: str | None = None,
+    writable_roots: list[str] | None = None,
+) -> str:
     """Run a single `codex exec --json --ephemeral --ignore-rules -` (prompt via stdin).
 
     The prompt is piped to the process's stdin rather than passed as an argv so
@@ -166,6 +172,13 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         timeout: Optional override (seconds). Defaults to ``settings.codex_timeout``.
             Callers should normally NOT pass this; the global setting is the
             single source of truth.
+        sandbox: Optional codex sandbox policy for model-generated shell commands
+            (``read-only`` | ``workspace-write`` | ``danger-full-access``). Left
+            unset (codex default, effectively read-only) for text generation;
+            image generation needs ``workspace-write`` so codex can write the
+            processed image to disk.
+        writable_roots: Extra directories to mark writable (``-C``) alongside the
+            workspace under ``workspace-write`` — e.g. the run's output dir.
 
     Returns:
         The raw stdout (JSONL) from the subprocess, decoded as UTF-8.
@@ -195,8 +208,16 @@ async def codex_exec(prompt: str, *, timeout: int | None = None) -> str:
         "--json",
         "--ephemeral",
         "--ignore-rules",
-        "-",
     ]
+    if sandbox:
+        cmd += ["--sandbox", sandbox]
+    for root in (writable_roots or []):
+        # --add-dir marks a directory writable alongside the primary workspace
+        # (do NOT use -C/--cd — that changes the working root and requires a
+        # trusted/git dir). Lets codex's shell steps (chroma-key removal, file
+        # moves) save the generated image under workspace-write.
+        cmd += ["--add-dir", root]
+    cmd.append("-")
 
     logger.info(
         "codex_exec start (timeout=%ss, prompt=%d bytes): %s...",

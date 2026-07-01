@@ -214,9 +214,11 @@ async def generate_images(
         quality = DEFAULT_QUALITY
 
     refs = [p for p in (reference_paths or []) if p and os.path.isfile(p)]
-    out_dir = _generated_dir(run_id)
+    out_dir = os.path.abspath(_generated_dir(run_id))
     ts = int(time.time())
     log_name = job_id or str(ts)
+    # Absolute target paths so codex writes to the exact place regardless of its
+    # cwd, and so they line up with the writable-root we hand codex below.
     target_paths = [os.path.join(out_dir, f"{ts}_{i + 1}.png") for i in range(n)]
 
     # White-bg needs the vendored chroma-key helper. Fail fast with a precise,
@@ -243,7 +245,16 @@ async def generate_images(
     )
 
     try:
-        raw = await codex_exec(codex_prompt)
+        # Image generation must WRITE the finished PNG to our output dir. Codex's
+        # default sandbox is read-only, which lets the built-in image_gen source
+        # be created but blocks the shell chroma-key/move step from saving into
+        # the project (observed: "Read-only file system"). Grant workspace-write
+        # plus our output dir as an explicit writable root.
+        raw = await codex_exec(
+            codex_prompt,
+            sandbox="workspace-write",
+            writable_roots=[out_dir],
+        )
     except CodexExecError as e:
         # codex 子进程本身失败（二进制缺失 / 未登录 / 非零退出 / 超时）。把完整
         # 报错连同提示词落盘成可下载日志，inline 只留简短信息。
@@ -279,11 +290,14 @@ async def generate_images(
             "image_gen produced no files run=%s job=%s white_bg=%s; tail=%s",
             run_id, log_name, white_bg, tail,
         )
-        hint = (
-            "codex 正常退出但未产出图片。"
-            + ("常见原因：白底后处理脚本执行失败（缺 Pillow 或路径错）。" if white_bg else "可能 codex 未实际调用 image_gen 工具。")
-            + f" codex 输出末尾：\n{tail}"
-        )
+        read_only = "read-only file system" in raw.lower() or "read only" in raw.lower()
+        if read_only:
+            cause = "codex 沙箱只读，无法写盘（已默认 workspace-write，若仍报只读请升级 codex 或检查其沙箱配置）。"
+        elif white_bg:
+            cause = "常见原因：白底后处理脚本执行失败（缺 Pillow 或路径错）。"
+        else:
+            cause = "可能 codex 未实际调用 image_gen 工具。"
+        hint = "codex 正常退出但未产出图片。" + cause + f" codex 输出末尾：\n{tail}"
         raise ImageGenError(hint, log_url=log_url)
 
     urls = [to_artifact_url(p) for p in produced]

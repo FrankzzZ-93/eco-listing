@@ -45,6 +45,20 @@ def _run_state_lock(run_id: str) -> asyncio.Lock:
     return lock
 
 
+# Downstream channels to reset when re-running from an earlier stage, so the UI
+# and pipeline reflect a fresh re-run instead of the previous run's finished
+# outputs (MemoryHelper.has treats empty dict/list as "absent"). Last-value-wins
+# channels (no add-reducer), so writing empties clears them.
+# Expression layer only (copywriter → st_optimize) — keeps the classification.
+_LISTING_DOWNSTREAM_RESET = {
+    "draft_listing_v1": {}, "st_v1": [], "draft_listing_v2": {}, "st_v2": [],
+    "final_listing": {}, "st_v3": [], "final_st": [], "word_frequency_report": {},
+}
+# Semantic + expression layers (keyword_classify → … → st_optimize) — for a
+# re-classify (new keyword library or new attributes).
+_RECLASSIFY_DOWNSTREAM_RESET = {"classified_keywords": {}, **_LISTING_DOWNSTREAM_RESET}
+
+
 def _is_actively_running(run_id: str) -> bool:
     """True only when a live graph task is executing nodes for this run.
 
@@ -563,7 +577,12 @@ async def rerun_from_attributes(run_id: str, req: RerunFromAttributesRequest):
         if not MemoryHelper.has(s, "keyword_library"):
             raise HTTPException(400, "缺少关键词词库，无法重新执行后续流程")
 
-        update = {"status": "running", "pending_action": {}, "error": ""}
+        # Clear the old classification + listing so the pipeline visibly restarts
+        # from keyword classification instead of showing the prior run's outputs.
+        update = {
+            "status": "running", "pending_action": {}, "error": "",
+            **_RECLASSIFY_DOWNSTREAM_RESET,
+        }
         if req.data is not None:
             if not isinstance(req.data, dict) or not req.data:
                 raise HTTPException(400, "属性表需为非空对象")
@@ -612,9 +631,12 @@ async def regenerate_listing(run_id: str):
         # Reposition as if keyword_classify_review just completed → next node is
         # copywriter. interrupt_before only fires when *entering* that node, so
         # the resume runs straight through copywriter → st_optimize → export.
+        # Clear the old listing/ST (keep the classification) so the UI shows the
+        # copy being regenerated rather than the previous result.
         await graph.aupdate_state(
             config,
-            {"status": "running", "pending_action": {}, "error": ""},
+            {"status": "running", "pending_action": {}, "error": "",
+             **_LISTING_DOWNSTREAM_RESET},
             as_node="keyword_classify_review",
         )
     task = asyncio.create_task(_resume_graph(run_id))
@@ -683,7 +705,9 @@ async def rerun_from_keywords(run_id: str, file: UploadFile = File(...)):
         # Reposition as if attribute review just completed → the conditional edge
         # routes to keyword_classify (a keyword library now exists). Re-classify
         # with the new library, pause at the classification review, then
-        # copywriter → st_optimize → export.
+        # copywriter → st_optimize → export. Clear the old classification + listing
+        # so the pipeline visibly restarts from classification instead of showing
+        # the previous run's finished outputs.
         await graph.aupdate_state(
             config,
             {
@@ -691,6 +715,7 @@ async def rerun_from_keywords(run_id: str, file: UploadFile = File(...)):
                 "status": "running",
                 "pending_action": {},
                 "error": "",
+                **_RECLASSIFY_DOWNSTREAM_RESET,
             },
             as_node="human_review",
         )

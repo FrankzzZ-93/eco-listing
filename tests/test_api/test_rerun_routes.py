@@ -91,11 +91,14 @@ async def test_rerun_from_keywords_reclassifies_when_paused_at_review(stub_graph
     app = stub_graph
     run_id = "run_rerun"
     cfg = await _drive_to_review(app, run_id)
-
+    # Approve the classification → copywriter → export → completed, so the run
+    # has real downstream outputs (like the user's completed run).
+    await app.ainvoke(None, cfg)
     st = await app.aget_state(cfg)
-    assert st.next == ("keyword_classify_review",)
+    assert st.next == ()  # completed
     assert st.values["classified_keywords"]["A"][0]["keyword"] == "old"
-    # No live task while paused at the gate — the earlier ainvoke already returned.
+    assert st.values.get("final_listing"), "first run produced a listing"
+    # No live task while completed — the earlier ainvoke already returned.
     assert not routes._is_actively_running(run_id)
 
     # Re-upload a NEW library. Must NOT 400, and must re-run classification.
@@ -110,3 +113,7 @@ async def test_rerun_from_keywords_reclassifies_when_paused_at_review(stub_graph
     st = await app.aget_state(cfg)
     assert st.next == ("keyword_classify_review",), "must pause at classification review again"
     assert st.values["classified_keywords"]["A"][0]["keyword"] == "newkw", "re-classified with new library"
+    # The previous run's listing/ST must be cleared (pipeline shows a fresh
+    # re-run, not the old completed outputs). copywriter hasn't run yet — paused.
+    assert not st.values.get("final_listing"), "old listing cleared on re-classify"
+    assert not st.values.get("final_st"), "old ST cleared on re-classify"

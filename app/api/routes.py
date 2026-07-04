@@ -45,6 +45,23 @@ def _run_state_lock(run_id: str) -> asyncio.Lock:
     return lock
 
 
+def _is_actively_running(run_id: str) -> bool:
+    """True only when a live graph task is executing nodes for this run.
+
+    The stored ``status`` channel stays "running" while a run is merely PAUSED
+    at an interrupt gate (e.g. keyword_classify_review — the run started, ran a
+    node, and the ainvoke returned at the interrupt). Guarding edit/re-run
+    endpoints on ``status == "running"`` therefore wrongly rejects legitimate
+    actions at a gate (e.g. re-uploading a keyword library while paused at the
+    classification review). A live, not-done asyncio task is the real signal
+    that nodes are executing right now. Mirrors the check in ``resume_run``.
+    """
+    from app.api._state import get_run_task
+
+    task = get_run_task(run_id)
+    return task is not None and not task.done()
+
+
 # --- Request / Response models ---
 
 
@@ -503,7 +520,7 @@ async def save_attributes(run_id: str, req: SaveAttributesRequest):
         state = await graph.aget_state(config)
         if not state or not state.values:
             raise HTTPException(404, "Run not found")
-        if state.values.get("status") == "running":
+        if _is_actively_running(run_id):
             raise HTTPException(400, "任务运行中，暂不能修改属性表")
         await graph.aupdate_state(config, {
             "product_attributes_draft": req.data,
@@ -541,7 +558,7 @@ async def rerun_from_attributes(run_id: str, req: RerunFromAttributesRequest):
         if not state or not state.values:
             raise HTTPException(404, "Run not found")
         s = state.values
-        if s.get("status") == "running":
+        if _is_actively_running(run_id):
             raise HTTPException(400, "任务正在运行中，请等待当前流程完成")
         if not MemoryHelper.has(s, "keyword_library"):
             raise HTTPException(400, "缺少关键词词库，无法重新执行后续流程")
@@ -582,7 +599,7 @@ async def regenerate_listing(run_id: str):
         if not state or not state.values:
             raise HTTPException(404, "Run not found")
         s = state.values
-        if s.get("status") == "running":
+        if _is_actively_running(run_id):
             raise HTTPException(400, "任务正在运行中，请等待当前生成完成")
         if not MemoryHelper.has(s, "classified_keywords"):
             raise HTTPException(400, "缺少关键词分类结果，无法重新生成文案")
@@ -655,7 +672,7 @@ async def rerun_from_keywords(run_id: str, file: UploadFile = File(...)):
         if not state or not state.values:
             raise HTTPException(404, "Run not found")
         s = state.values
-        if s.get("status") == "running":
+        if _is_actively_running(run_id):
             raise HTTPException(400, "任务正在运行中，请等待当前流程完成")
         if not (
             MemoryHelper.has(s, "approved_product_attributes")

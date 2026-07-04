@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 from typing import Union
 
 import openpyxl
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Amazon ASIN: 10-char alphanumeric token; product ASINs start with "B0".
 # Used to strip ASIN-like tokens out of keyword libraries and generated ST,
@@ -24,18 +27,54 @@ _STOPWORDS = frozenset(
 )
 
 
+def _best_integer_column(rows: list[tuple], header: list[str], exclude: set[int]) -> int | None:
+    """Pick the column that most looks like a search-volume column.
+
+    Used to repair a parse where every ``search_volume`` came out 0. Search
+    volumes are positive integers, while CPC ($1.23) and conversion (0.09) are
+    fractional — so the column with the most positive *whole-number* cells is
+    the search-volume column. Columns in ``exclude`` (keyword / CPC / conversion
+    / translation) are skipped.
+    """
+    best_idx, best_score = None, 0
+    for idx in range(len(header)):
+        if idx in exclude:
+            continue
+        score = 0
+        for row in rows[1:]:
+            if idx >= len(row):
+                continue
+            v = row[idx]
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int) and v > 0:
+                score += 1
+            elif isinstance(v, float) and v > 0 and v.is_integer():
+                score += 1
+        if score > best_score:
+            best_idx, best_score = idx, score
+    return best_idx
+
+
 def parse_xlsx_keywords(content: bytes) -> list[dict]:
     """Parse keyword xlsx files from 西柚 or 鸥鹭 into a unified format.
 
-    西柚 header signature: first column is '关键词 (数据来源于西柚找词)'
-      - keyword col: '关键词 (数据来源于西柚找词)'
-      - search_volume col: '周搜索量'
-      - competition col: '竞争难度档位'
+    西柚 header signature: first column starts with '关键词' (e.g.
+    '关键词 (数据来源于西柚找词)' or '关键词 (数据来源于西柚洞察)')
+      - keyword col: first column
+      - search_volume col: any header containing '搜索量' — the exact name
+        varies across 西柚 exports ('周搜索量', '周平均搜索量', …)
+      - competition col: '竞争难度档位' if present (optional)
 
     鸥鹭 header signature: first column is '流量关键词'
       - keyword col: '流量关键词'
       - search_volume col: '月搜索量'
       - competition col: (derived from '机会指数')
+
+    Robustness: the search-volume column is resolved by substring/known-name
+    matching (not a hardcoded name), and a post-parse validation repairs the
+    common failure where every ``search_volume`` came out 0 because the volume
+    column wasn't recognized (see ``_repair_zero_search_volume``).
     """
     wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
     ws = wb.active
@@ -69,6 +108,30 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
     cpc_idx = _find_col("CPC", "建议竞价", "建议出价")
     conv_idx = _find_col("转化率")
 
+    def _int(val) -> int:
+        try:
+            return int(float(str(val).replace(",", "").strip()))
+        except (ValueError, TypeError):
+            return 0
+
+    # Resolve the weekly/monthly search-volume column robustly. 西柚 exports use
+    # different names across versions ('周搜索量' vs '周平均搜索量'), so match
+    # known names first, then any header containing '搜索量'. Excludes the CPC /
+    # conversion / translation columns from later numeric repair.
+    _sv_exclude = {i for i in (translation_idx, cpc_idx, conv_idx) if i is not None}
+
+    def _resolve_sv_col() -> int | None:
+        for exact in ("周搜索量", "周平均搜索量", "月搜索量", "月平均搜索量", "搜索量"):
+            for idx, name in enumerate(header):
+                if name == exact:
+                    return idx
+        for idx, name in enumerate(header):
+            if "搜索量" in name:
+                return idx
+        return None
+
+    sv_idx = _resolve_sv_col()
+
     def _opt(row: tuple, idx: int | None, default=""):
         if idx is None or idx >= len(row):
             return default
@@ -93,27 +156,23 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
 
     results: list[dict] = []
     first_col = header[0] if header else ""
+    kw_idx = 0  # column holding the keyword text; used by the repair pass
 
     if "西柚" in first_col or "关键词" == first_col.split("(")[0].strip().split("（")[0].strip():
         kw_col = header[0]
-        sv_col = "周搜索量"
-        comp_col = "竞争难度档位"
+        comp_idx = _find_col("竞争难度", "难度档位", "竞争度")
         for row in rows[1:]:
             kw = str(_get(row, kw_col, "")).strip()
             if not kw:
                 continue
-            sv = _get(row, sv_col, 0)
-            try:
-                sv = int(float(sv))
-            except (ValueError, TypeError):
-                sv = 0
             results.append({
                 "keyword": kw,
-                "search_volume": sv,
-                "competition": str(_get(row, comp_col, "")),
+                "search_volume": _int(_opt(row, sv_idx, 0)),
+                "competition": str(_opt(row, comp_idx, "")).strip(),
                 **_source_extras(row),
             })
     elif first_col == "流量关键词":
+        kw_idx = col_map.get("流量关键词", 0)
         for row in rows[1:]:
             kw = str(_get(row, "流量关键词", "")).strip()
             if not kw:
@@ -159,6 +218,36 @@ def parse_xlsx_keywords(content: bytes) -> list[dict]:
                 "competition": "",
                 **_source_extras(row),
             })
+
+    # Post-parse validation + repair. If EVERY search_volume is 0, the volume
+    # column almost certainly wasn't recognized (e.g. a 西柚 variant naming it
+    # '周平均搜索量'). Find the most search-volume-like numeric column and
+    # backfill by row order (results mirror rows[1:] with a non-empty keyword).
+    if results and all(int(r.get("search_volume", 0) or 0) == 0 for r in results):
+        repair_idx = _best_integer_column(rows, header, _sv_exclude | {kw_idx})
+        if repair_idx is not None:
+            res_iter = iter(results)
+            filled = 0
+            for row in rows[1:]:
+                kw_cell = row[kw_idx] if kw_idx < len(row) else None
+                if not str(kw_cell or "").strip():
+                    continue
+                entry = next(res_iter, None)
+                if entry is None:
+                    break
+                entry["search_volume"] = _int(row[repair_idx] if repair_idx < len(row) else 0)
+                if entry["search_volume"] > 0:
+                    filled += 1
+            logger.warning(
+                "keyword parse: all search_volume=0; repaired from column '%s' (idx=%d), %d/%d rows now non-zero. header=%s",
+                header[repair_idx] if repair_idx < len(header) else "?",
+                repair_idx, filled, len(results), header,
+            )
+        else:
+            logger.warning(
+                "keyword parse: all search_volume=0 and no numeric column to repair from. header=%s",
+                header,
+            )
 
     return results
 

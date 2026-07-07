@@ -10,6 +10,12 @@ const tunnelMode = process.env.PUBLIC_TUNNEL === '1';
 
 export default defineConfig({
   plugins: [react()],
+  // Build-time constants the ported image studio (src/imagegen) expects. We
+  // don't use its dev-proxy, so __DEV_PROXY_CONFIG__ is null.
+  define: {
+    __APP_VERSION__: JSON.stringify('eco-imagegen'),
+    __DEV_PROXY_CONFIG__: JSON.stringify(null),
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

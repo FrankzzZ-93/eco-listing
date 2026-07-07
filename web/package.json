@@ -12,17 +12,28 @@
     "@monaco-editor/react": "^4.6.0",
     "antd": "^5.22.0",
     "@ant-design/icons": "^5.5.0",
+    "@fal-ai/client": "^1.10.0",
+    "@streamdown/math": "^1.0.2",
     "axios": "^1.7.0",
+    "core-js": "^3.49.0",
+    "fflate": "^0.8.2",
+    "katex": "^0.16.47",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.26.0",
+    "remark-gfm": "^4.0.1",
+    "streamdown": "^2.5.0",
     "swr": "^2.2.0",
-    "zustand": "^4.5.0"
+    "zustand": "^5.0.5"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
     "typescript": "^5.5.0",
     "vite": "^5.4.0"
   }

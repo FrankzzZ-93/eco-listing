@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Card, Button, Space, Segmented, Empty, Typography, Descriptions, Tag, Popconfirm, message } from 'antd';
 import { DownloadOutlined, ReloadOutlined, PictureOutlined } from '@ant-design/icons';
 import SectionCard from './SectionCard';
@@ -31,7 +30,6 @@ function makeAbsolute(path: string | undefined): string | undefined {
 
 export default function ListingPreview({ output, loading, runId, canRegenerate, regenerating, onRegenerate }: Props) {
   const [descView, setDescView] = useState<'preview' | 'source'>('preview');
-  const navigate = useNavigate();
 
   if (!output) {
     return <Empty description={loading ? '加载中…' : '最终 Listing 尚未生成'} />;
@@ -79,7 +77,10 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
                 type="primary"
                 ghost
                 icon={<PictureOutlined />}
-                onClick={() => navigate(`/run/${runId}/images`)}
+                // Open the ported Amazon image studio in a new tab. The studio
+                // reads the runId from the URL and auto-loads this run's Listing
+                // (title / bullets / description) + competitor images as context.
+                onClick={() => window.open(`/run/${runId}/studio`, '_blank', 'noopener')}
               >
                 生成商品图
               </Button>

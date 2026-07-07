@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.memory.shared_memory import MemoryHelper
@@ -1145,6 +1145,32 @@ async def list_run_image_jobs(run_id: str):
     from app.tools.image_jobs import list_jobs
 
     return {"jobs": list_jobs(run_id)}
+
+
+class PlanImagesRequest(BaseModel):
+    system: str = ""
+    user: str = ""
+    # aliased because `schema` shadows BaseModel internals
+    schema_: Optional[dict] = Field(default=None, alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/runs/{run_id}/images/plan")
+async def plan_run_images(run_id: str, req: PlanImagesRequest):
+    """Run the Amazon Listing image planner via codex (no API key). The frontend
+    builds the system/user prompts + JSON Schema; we return the JSON plan string."""
+    from app.tools.image_plan_tool import plan_listing_images
+
+    if not req.user.strip() and not req.system.strip():
+        raise HTTPException(400, "策划请求为空")
+    try:
+        content = await plan_listing_images(req.system, req.user, req.schema_)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"AI 策划失败: {e}")
+    return {"content": content}
 
 
 @router.post("/runs/{run_id}/images/upload-reference")

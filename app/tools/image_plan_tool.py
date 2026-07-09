@@ -11,9 +11,22 @@ from __future__ import annotations
 import json
 import logging
 
+from app.config import settings
 from app.tools.codex_exec import codex_exec
 
 logger = logging.getLogger(__name__)
+
+# Planning emits a large structured JSON (7-12 image slots × localized copy), so
+# it must not be capped by a short scrape-oriented codex timeout. Give it a
+# generous floor while still honoring a higher configured value.
+_PLAN_MIN_TIMEOUT_SECONDS = 1800
+
+
+def _plan_timeout() -> int:
+    from app import app_settings
+
+    configured = app_settings.get_scrape_param("codex_timeout", settings.codex_timeout)
+    return max(int(configured), _PLAN_MIN_TIMEOUT_SECONDS)
 
 
 def _extract_json_text(raw: str) -> str:
@@ -63,8 +76,9 @@ async def plan_listing_images(system: str, user: str, schema: dict | None) -> st
         ]
     prompt = "\n".join(parts)
 
-    logger.info("image_plan start (prompt=%d bytes)", len(prompt))
-    raw = await codex_exec(prompt)
+    timeout = _plan_timeout()
+    logger.info("image_plan start (prompt=%d bytes, timeout=%ds)", len(prompt), timeout)
+    raw = await codex_exec(prompt, timeout=timeout)
     text = _extract_json_text(raw)
 
     # Validate it parses; re-serialize compactly so the frontend gets clean JSON.

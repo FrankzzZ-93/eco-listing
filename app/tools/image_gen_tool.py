@@ -290,8 +290,19 @@ async def generate_images(
             "image_gen produced no files run=%s job=%s white_bg=%s; tail=%s",
             run_id, log_name, white_bg, tail,
         )
-        read_only = "read-only file system" in raw.lower() or "read only" in raw.lower()
-        if read_only:
+        raw_lower = raw.lower()
+        read_only = "read-only file system" in raw_lower or "read only" in raw_lower
+        # codex explicitly reports when its session has no built-in image_gen tool
+        # (varies by codex version / account / model). Detect it so the error is
+        # actionable instead of a generic "no image produced".
+        image_gen_unavailable = "image_gen" in raw_lower and "not available" in raw_lower
+        if image_gen_unavailable:
+            cause = (
+                "该机器的 codex 会话未提供内置 image_gen 工具（我们已禁用需要 OPENAI_API_KEY 的 "
+                "CLI 兜底）。请在该机器上升级 codex 到较新版本（npm i -g @openai/codex@latest）、"
+                "确认内置 imagegen 技能存在（~/.codex/skills/.system/imagegen/）且账号支持图片生成。"
+            )
+        elif read_only:
             cause = "codex 沙箱只读，无法写盘（已默认 workspace-write，若仍报只读请升级 codex 或检查其沙箱配置）。"
         elif white_bg:
             cause = "常见原因：白底后处理脚本执行失败（缺 Pillow 或路径错）。"

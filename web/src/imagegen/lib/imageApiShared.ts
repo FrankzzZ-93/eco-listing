@@ -19,6 +19,10 @@ export interface CallApiOptions {
   signal?: AbortSignal
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
+  /** eco_listing: the codex backend runs generation as a persisted server-side
+   *  job, so the id is reported as soon as it exists — that lets a task survive
+   *  a page reload and resume polling instead of being marked interrupted. */
+  onCodexJobStarted?: (jobId: string) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
 }
 

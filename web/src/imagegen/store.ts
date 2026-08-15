@@ -14,6 +14,9 @@ import type {
   TaskParams,
   InputImage,
   MaskDraft,
+  SeedreamAnnotation,
+  SeedreamEditorDraft,
+  TaskImageEditContext,
   TaskRecord,
   ExportData,
   ResponsesApiResponse,
@@ -44,6 +47,7 @@ import {
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
+import { resumeCodexJob } from './lib/ecoBackend'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
@@ -82,6 +86,18 @@ const AGENT_STOPPED_MESSAGE = '已停止生成。'
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28
 const ERROR_TOAST_MAX_LENGTH = 80
 const API_MAX_INPUT_IMAGES = 16
+const MAX_SEEDREAM_REFERENCE_IMAGES = 4
+
+const DEFAULT_SEEDREAM_EDITOR_DRAFT: SeedreamEditorDraft = {
+  sourceImageId: null,
+  referenceImageIds: [],
+  instruction: '',
+  annotations: [],
+  resolution: '2k',
+  latestTaskId: null,
+  updatedAt: 0,
+}
+
 type ToastType = 'info' | 'success' | 'error'
 type AgentInputDraft = {
   prompt: string
@@ -612,6 +628,7 @@ export function getPersistedState(state: AppState) {
     supportPromptDismissed: state.supportPromptDismissed,
     supportPromptOpen: state.supportPromptOpen,
     supportPromptSkippedForImportedData: state.supportPromptSkippedForImportedData,
+    seedreamEditorDraft: state.seedreamEditorDraft,
   }
 }
 
@@ -668,6 +685,7 @@ export function mergePersistedState(persistedState: unknown, currentState: AppSt
     supportPromptDismissed: Boolean(persisted.supportPromptDismissed),
     supportPromptOpen: Boolean(persisted.supportPromptOpen),
     supportPromptSkippedForImportedData: Boolean(persisted.supportPromptSkippedForImportedData),
+    seedreamEditorDraft: normalizeSeedreamEditorDraft(persisted.seedreamEditorDraft),
     prompt: galleryInputDraft?.prompt ?? '',
     inputImages: galleryInputDraft?.inputImages ?? [],
     maskDraft: galleryInputDraft?.maskDraft ?? null,
@@ -704,6 +722,9 @@ interface AppState {
   maskEditorImageId: string | null
   setMaskEditorImageId: (id: string | null) => void
   galleryInputDraft: AgentInputDraft | null
+  seedreamEditorDraft: SeedreamEditorDraft
+  setSeedreamEditorDraft: (patch: Partial<SeedreamEditorDraft>) => void
+  resetSeedreamEditorDraft: () => void
 
   // 参数
   params: TaskParams
@@ -816,12 +837,16 @@ function isImageReferencedByState(state: AppState, imageId: string) {
   if (state.inputImages.some((img) => img.id === imageId)) return true
   if (state.galleryInputDraft?.inputImages.some((img) => img.id === imageId)) return true
   if (Object.values(state.agentInputDrafts).some((draft) => draft.inputImages.some((img) => img.id === imageId))) return true
+  if (isImageReferencedBySeedreamDraft(state.seedreamEditorDraft, imageId)) return true
   if (state.tasks.some((task) =>
     task.inputImageIds.includes(imageId) ||
     task.outputImages.includes(imageId) ||
     task.streamPartialImageIds?.includes(imageId) ||
     task.maskTargetImageId === imageId ||
-    task.maskImageId === imageId
+    task.maskImageId === imageId ||
+    task.imageEditContext?.sourceImageId === imageId ||
+    task.imageEditContext?.visualGuideImageId === imageId ||
+    task.imageEditContext?.referenceImageIds.includes(imageId)
   )) return true
   return state.agentConversations.some((conversation) =>
     conversation.rounds.some((round) =>
@@ -872,6 +897,53 @@ function normalizeMaskDraft(value: unknown): MaskDraft | null {
     targetImageId: value.targetImageId,
     maskDataUrl: value.maskDataUrl,
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+  }
+}
+
+function normalizeSeedreamAnnotation(value: unknown): SeedreamAnnotation | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null
+  if (value.kind !== 'brush' && value.kind !== 'rectangle' && value.kind !== 'ellipse' && value.kind !== 'arrow') return null
+  if (!Array.isArray(value.points)) return null
+  const points = value.points
+    .map((point) => {
+      if (!isRecord(point) || typeof point.x !== 'number' || typeof point.y !== 'number') return null
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null
+      return {
+        x: Math.min(1, Math.max(0, point.x)),
+        y: Math.min(1, Math.max(0, point.y)),
+      }
+    })
+    .filter((point): point is { x: number; y: number } => point != null)
+  if (points.length < 2) return null
+  return {
+    id: value.id,
+    kind: value.kind,
+    color: typeof value.color === 'string' && value.color.trim() ? value.color : '#ef4444',
+    width: typeof value.width === 'number' && Number.isFinite(value.width)
+      ? Math.min(0.1, Math.max(0.001, value.width))
+      : 0.006,
+    points,
+  }
+}
+
+export function normalizeSeedreamEditorDraft(value: unknown): SeedreamEditorDraft {
+  const draft = isRecord(value) ? value : {}
+  const sourceImageId = typeof draft.sourceImageId === 'string' && draft.sourceImageId ? draft.sourceImageId : null
+  const referenceImageIds = Array.isArray(draft.referenceImageIds)
+    ? Array.from(new Set(draft.referenceImageIds.filter((id): id is string => typeof id === 'string' && Boolean(id))))
+      .filter((id) => id !== sourceImageId)
+      .slice(0, MAX_SEEDREAM_REFERENCE_IMAGES)
+    : []
+  return {
+    sourceImageId,
+    referenceImageIds,
+    instruction: typeof draft.instruction === 'string' ? draft.instruction : '',
+    annotations: Array.isArray(draft.annotations)
+      ? draft.annotations.map(normalizeSeedreamAnnotation).filter((item): item is SeedreamAnnotation => item != null)
+      : [],
+    resolution: draft.resolution === '4k' ? '4k' : '2k',
+    latestTaskId: typeof draft.latestTaskId === 'string' && draft.latestTaskId ? draft.latestTaskId : null,
+    updatedAt: typeof draft.updatedAt === 'number' && Number.isFinite(draft.updatedAt) ? draft.updatedAt : 0,
   }
 }
 
@@ -1184,6 +1256,18 @@ export const useStore = create<AppState>()(
       },
       galleryInputDraft: null,
 
+      seedreamEditorDraft: { ...DEFAULT_SEEDREAM_EDITOR_DRAFT },
+      setSeedreamEditorDraft: (patch) => set((state) => ({
+        seedreamEditorDraft: normalizeSeedreamEditorDraft({
+          ...state.seedreamEditorDraft,
+          ...patch,
+          updatedAt: Date.now(),
+        }),
+      })),
+      resetSeedreamEditorDraft: () => set({
+        seedreamEditorDraft: { ...DEFAULT_SEEDREAM_EDITOR_DRAFT, updatedAt: Date.now() },
+      }),
+
       // Params
       params: { ...DEFAULT_PARAMS },
       setParams: (p) => set((s) => ({ params: { ...s.params, ...p } })),
@@ -1438,7 +1522,9 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
+    // A codex job keeps running on the server and persists its own result, so a
+    // reload doesn't lose it — initStore resumes it instead of failing the task.
+    if (!isRunningOpenAITask(task) || task.customTaskId || task.codexJobId) return task
 
     const updated: TaskRecord = {
       ...task,
@@ -1791,6 +1877,9 @@ export async function initStore() {
     ) {
       scheduleCustomRecovery(task.id, 0)
     }
+    if (task.codexJobId && task.status === 'running') {
+      void recoverCodexTask(task.id)
+    }
   }
 
   // 收集所有任务引用的图片 id
@@ -1815,6 +1904,8 @@ export async function initStore() {
   for (const t of tasks) {
     addTaskReferencedImageIds(referencedIds, t)
   }
+  const seedreamEditorDraft = state.seedreamEditorDraft
+  addSeedreamEditorDraftReferencedImageIds(referencedIds, seedreamEditorDraft)
 
   // 只枚举 key 清理孤立图片，避免启动时把所有 4K 原图读进内存。
   const imageIds = await getAllImageIds()
@@ -1827,6 +1918,25 @@ export async function initStore() {
     }
   }
   scheduleThumbnailBackfill(referencedImageIds)
+
+  // Drop editor-draft ids whose images didn't survive (deleted in an earlier
+  // session, or never stored), so the editor doesn't restore a dangling source.
+  if (seedreamEditorDraft) {
+    const availableImageIds = new Set(referencedImageIds)
+    const restoredSeedreamDraft: SeedreamEditorDraft = {
+      ...seedreamEditorDraft,
+      sourceImageId: seedreamEditorDraft.sourceImageId && availableImageIds.has(seedreamEditorDraft.sourceImageId)
+        ? seedreamEditorDraft.sourceImageId
+        : null,
+      referenceImageIds: seedreamEditorDraft.referenceImageIds.filter((id) => availableImageIds.has(id)),
+    }
+    if (
+      restoredSeedreamDraft.sourceImageId !== seedreamEditorDraft.sourceImageId ||
+      restoredSeedreamDraft.referenceImageIds.length !== seedreamEditorDraft.referenceImageIds.length
+    ) {
+      useStore.setState({ seedreamEditorDraft: restoredSeedreamDraft })
+    }
+  }
 
   const restoredInputImages: InputImage[] = []
   for (const img of persistedInputImages) {
@@ -1924,6 +2034,86 @@ export async function initStore() {
         : {}),
     })
   }
+}
+
+export interface SubmitTaskWithInputRequest {
+  prompt: string
+  inputImages: InputImage[]
+  params: TaskParams
+  category: NonNullable<TaskRecord['category']>
+  imageEditContext?: TaskImageEditContext
+  maskTargetImageId?: string | null
+  maskImageId?: string | null
+}
+
+/**
+ * 用指定输入创建任务，不读取也不修改首页输入栏状态。图片编辑工作区用它提交。
+ *
+ * eco_listing: 上游会在这里按 apiProfileId 挑选配置并校验 API Key；本仓库统一走
+ * codex 后端，所以只取当前配置用于任务元信息展示，不做能力/密钥校验。
+ */
+export async function submitTaskWithInput(request: SubmitTaskWithInputRequest): Promise<string | null> {
+  const state = useStore.getState()
+  const settings = normalizeSettings(state.settings)
+  const profile = getActiveApiProfile(state.settings)
+
+  const prompt = request.prompt.trim()
+  if (!prompt) {
+    state.showToast('请输入编辑要求', 'error')
+    return null
+  }
+  if (request.inputImages.length > API_MAX_INPUT_IMAGES) {
+    state.showToast(`参考图数量不能超过 ${API_MAX_INPUT_IMAGES} 张`, 'error')
+    return null
+  }
+
+  const storedImages: InputImage[] = []
+  try {
+    for (const image of request.inputImages) {
+      const dataUrl = image.dataUrl || await ensureImageCached(image.id)
+      if (!dataUrl) throw new Error('输入图片已不存在')
+      const existing = await getImage(image.id)
+      if (!existing) {
+        await putImage({ id: image.id, dataUrl, source: 'upload', createdAt: Date.now() })
+      }
+      cacheImage(image.id, dataUrl)
+      storedImages.push({ id: image.id, dataUrl })
+    }
+  } catch (error) {
+    state.showToast(error instanceof Error ? error.message : String(error), 'error')
+    return null
+  }
+
+  const requestSettings = createSettingsForApiProfile(settings, profile)
+  const params = normalizeParamsForSettings(request.params, requestSettings, { hasInputImages: storedImages.length > 0 })
+  const taskId = genId()
+  const task: TaskRecord = {
+    id: taskId,
+    prompt,
+    params,
+    apiProvider: profile.provider,
+    apiProfileId: profile.id,
+    apiProfileName: profile.name,
+    apiMode: profile.apiMode,
+    apiModel: profile.model,
+    inputImageIds: storedImages.map((image) => image.id),
+    maskTargetImageId: request.maskTargetImageId ?? null,
+    maskImageId: request.maskImageId ?? null,
+    outputImages: [],
+    status: 'running',
+    error: null,
+    createdAt: Date.now(),
+    finishedAt: null,
+    elapsed: null,
+    category: request.category,
+    imageEditContext: request.imageEditContext,
+  }
+
+  useStore.getState().setTasks([task, ...useStore.getState().tasks])
+  await putTask(task)
+  useStore.getState().showToast('任务已提交', 'success')
+  void executeTask(taskId)
+  return taskId
 }
 
 /** 提交新任务 */
@@ -2314,17 +2504,39 @@ function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   if (task.maskImageId) target.add(task.maskImageId)
   for (const id of task.outputImages || []) target.add(id)
   for (const id of task.streamPartialImageIds || []) target.add(id)
+  // Image-editor roles. These normally overlap inputImageIds, but a task whose
+  // input list was trimmed must still keep its source/guide images alive.
+  const editContext = task.imageEditContext
+  if (editContext) {
+    target.add(editContext.sourceImageId)
+    if (editContext.visualGuideImageId) target.add(editContext.visualGuideImageId)
+    for (const id of editContext.referenceImageIds || []) target.add(id)
+  }
+}
+
+/** The image-editor draft holds images that exist in no task yet (an uploaded
+ *  source, a picked reference), so it has to be consulted before GC'ing. */
+function isImageReferencedBySeedreamDraft(draft: SeedreamEditorDraft | undefined, imageId: string) {
+  if (!draft) return false
+  return draft.sourceImageId === imageId || draft.referenceImageIds.includes(imageId)
+}
+
+function addSeedreamEditorDraftReferencedImageIds(target: Set<string>, draft: SeedreamEditorDraft | undefined) {
+  if (!draft) return
+  if (draft.sourceImageId) target.add(draft.sourceImageId)
+  for (const id of draft.referenceImageIds) target.add(id)
 }
 
 async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
   const candidates = Array.from(new Set(Array.from(imageIds).filter(Boolean)))
   if (candidates.length === 0) return
 
-  const { tasks, inputImages, galleryInputDraft } = useStore.getState()
+  const { tasks, inputImages, galleryInputDraft, seedreamEditorDraft } = useStore.getState()
   const stillUsed = new Set<string>()
   for (const task of tasks) addTaskReferencedImageIds(stillUsed, task)
   addAgentReferencedImageIds(stillUsed)
   addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
+  addSeedreamEditorDraftReferencedImageIds(stillUsed, seedreamEditorDraft)
   for (const img of inputImages) stillUsed.add(img.id)
 
   for (const imgId of candidates) {
@@ -3597,6 +3809,11 @@ async function executeTask(taskId: string) {
           customRecoverable: false,
         })
       },
+      onCodexJobStarted: (jobId) => {
+        // Persisted immediately so a reload during the 1-3 min codex run can
+        // reattach to the job rather than reporting 请求中断.
+        updateTaskInStore(taskId, { codexJobId: jobId })
+      },
       onPartialImage: (partial) => {
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image)
@@ -4072,6 +4289,29 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   useStore.getState().showToast(`自定义异步任务已恢复，共 ${outputIds.length} 张图片`, 'success')
 }
 
+/**
+ * Reattach to a codex job that was still running when the page was closed.
+ * The backend keeps executing and persists the result, so this just resumes the
+ * wait and completes the task from the job's own output.
+ */
+async function recoverCodexTask(taskId: string) {
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task?.codexJobId || task.status !== 'running') return
+
+  try {
+    const result = await resumeCodexJob(task.codexJobId)
+    await completeRecoveredCustomTask(task, result)
+  } catch (err) {
+    updateTaskInStore(taskId, {
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+      ...getRawErrorPayload(err),
+      finishedAt: Date.now(),
+      elapsed: Date.now() - task.createdAt,
+    })
+  }
+}
+
 async function recoverCustomTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
@@ -4348,6 +4588,12 @@ export async function addImageFromFile(file: File): Promise<void> {
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
   const dataUrl = await fileToDataUrl(file)
+  const id = await storeImage(dataUrl, 'upload')
+  cacheImage(id, dataUrl)
+  return { id, dataUrl }
+}
+
+export async function createInputImageFromDataUrl(dataUrl: string): Promise<InputImage> {
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   return { id, dataUrl }

@@ -90,6 +90,8 @@ export interface CreateRunResponse {
 
 export interface RunSummary {
   run_id: string;
+  /** "" = Listing pipeline run; "image_studio" = standalone image-generation task. */
+  kind?: string;
   product_name: string;
   site: string;
   competitor_asins: string[];
@@ -99,6 +101,8 @@ export interface RunSummary {
   total_steps: number;
   current_step: string;
   current_agent: string | null;
+  /** Generated image count — only meaningful for kind === "image_studio". */
+  image_count?: number;
 }
 
 export interface ReviewSubmission {

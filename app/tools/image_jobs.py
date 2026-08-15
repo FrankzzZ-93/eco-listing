@@ -122,6 +122,34 @@ async def _update_job(run_id: str, job_id: str, **fields) -> None:
         _write(run_id, jobs)
 
 
+def _apply_mask_if_requested(params: dict, urls: list[str]) -> list[str]:
+    """Composite each generated image back onto the mask target, in place.
+
+    codex re-renders the whole frame, so without this the untouched parts of the
+    image would drift. Compositing is done in place so the URLs already returned
+    by ``generate_images`` stay valid. A failure here is logged and the raw
+    generation is kept rather than failing the whole job — the user still gets an
+    image, just an uncomposited one.
+    """
+    mask_path = params.get("mask_path")
+    target_path = params.get("mask_target_path")
+    if not mask_path or not target_path:
+        return urls
+
+    from app.tools.file_store import from_artifact_url
+    from app.tools.mask_composite import composite_with_mask
+
+    for url in urls:
+        path = from_artifact_url(url)
+        if not path:
+            continue
+        try:
+            composite_with_mask(target_path, path, mask_path, path)
+        except Exception:
+            logger.warning("mask composite failed for %s; keeping raw output", path, exc_info=True)
+    return urls
+
+
 async def run_job(run_id: str, job_id: str, params: dict, reference_paths: list[str]) -> None:
     """Execute one generation job and persist its outcome. Never raises."""
     try:
@@ -135,6 +163,7 @@ async def run_job(run_id: str, job_id: str, params: dict, reference_paths: list[
             white_bg=params.get("white_bg", False),
             job_id=job_id,
         )
+        urls = _apply_mask_if_requested(params, urls)
         await _update_job(run_id, job_id, status="completed", images=urls)
     except Exception as e:
         # Persist the full error + a link to the downloadable detail log (set by

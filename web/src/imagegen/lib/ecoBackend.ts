@@ -4,6 +4,7 @@
 // host route (ImageStudioPort) injects the current runId here.
 
 import type { CallApiOptions, CallApiResult } from './imageApiShared'
+import { buildMaskEditPrompt, createMaskGuideDataUrl } from './maskGuide'
 
 let ecoRunId: string | null = null
 
@@ -102,13 +103,36 @@ export async function generateViaCodex(opts: CallApiOptions): Promise<CallApiRes
     referenceUrls.push(await uploadReference(dataUrl, signal))
   }
 
+  // Masked (local) editing. store.submitTask has already reordered the mask
+  // target to index 0, so referenceUrls[0] is the image the mask was drawn on.
+  // codex can't take a mask, so we do two things: hand it a guide image that
+  // marks the region (steers WHAT is painted) and hand the backend the mask so
+  // it can composite the result back (guarantees the REST of the frame survives).
+  let prompt = opts.prompt
+  let maskUrl: string | null = null
+  let maskTargetUrl: string | null = null
+
+  if (opts.maskDataUrl && inputImageDataUrls.length > 0) {
+    maskTargetUrl = referenceUrls[0]
+    maskUrl = await uploadReference(opts.maskDataUrl, signal)
+
+    const guideDataUrl = await createMaskGuideDataUrl(inputImageDataUrls[0], opts.maskDataUrl)
+    if (guideDataUrl) {
+      // Insert the guide right after the target so the prompt's "图2" matches.
+      referenceUrls.splice(1, 0, await uploadReference(guideDataUrl, signal))
+      prompt = buildMaskEditPrompt(opts.prompt, referenceUrls.length - 2)
+    }
+  }
+
   const body = {
-    prompt: opts.prompt,
+    prompt,
     n: params.n > 0 ? params.n : 1,
     size: normalizeSize(params.size),
     quality: params.quality === 'auto' ? 'high' : params.quality,
     reference_urls: referenceUrls,
     white_bg: false,
+    mask_url: maskUrl,
+    mask_target_url: maskTargetUrl,
   }
 
   const startRes = await fetch(`${base}/images/generate`, {
@@ -122,10 +146,28 @@ export async function generateViaCodex(opts: CallApiOptions): Promise<CallApiRes
     throw new Error(detail?.detail || `生图请求失败：HTTP ${startRes.status}`)
   }
   const { job } = (await startRes.json()) as { job: ImageJob }
+  // Hand the id to the caller before we start waiting: the job now lives on the
+  // server, so a reload mid-generation can pick it back up instead of losing it.
+  opts.onCodexJobStarted?.(job.id)
 
-  // Poll the job to completion (codex runs 1-3 min; no streaming preview). Bounded
-  // by a wall-clock deadline and a consecutive-error cap so a dead backend can't
-  // loop forever — only signal-abort would otherwise stop it.
+  return awaitCodexJob(job.id, signal)
+}
+
+/**
+ * Resume a job that was started earlier (e.g. before a page reload). The backend
+ * persists jobs per run, so this is just the same wait loop against a known id.
+ */
+export async function resumeCodexJob(jobId: string, signal?: AbortSignal): Promise<CallApiResult> {
+  return awaitCodexJob(jobId, signal)
+}
+
+/**
+ * Poll a backend job to completion (codex runs 1-3 min; no streaming preview).
+ * Bounded by a wall-clock deadline and a consecutive-error cap so a dead backend
+ * can't loop forever — only signal-abort would otherwise stop it.
+ */
+async function awaitCodexJob(jobId: string, signal?: AbortSignal): Promise<CallApiResult> {
+  const base = apiBase()
   const deadline = Date.now() + POLL_MAX_MS
   let consecutiveErrors = 0
   for (;;) {
@@ -147,7 +189,7 @@ export async function generateViaCodex(opts: CallApiOptions): Promise<CallApiRes
     consecutiveErrors = 0
 
     const { jobs } = (await jobsRes.json()) as { jobs: ImageJob[] }
-    const current = jobs.find((j) => j.id === job.id)
+    const current = jobs.find((j) => j.id === jobId)
     if (!current || current.status === 'running') continue
     if (current.status === 'failed') throw new Error(current.error || '生图失败')
 

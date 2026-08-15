@@ -4,7 +4,47 @@ import type { AmazonMarketplaceId } from './lib/amazonMarketplaces'
 
 export type ApiMode = 'images' | 'responses' | 'chat'
 export type AppMode = 'gallery' | 'agent'
-export type TaskWorkflow = 'amazon-listing' | 'amazon-aplus' | 'gallery' | 'agent' | 'unknown'
+export type TaskWorkflow = 'amazon-listing' | 'amazon-aplus' | 'seedream-edit' | 'gallery' | 'agent' | 'unknown'
+
+// --- 图片编辑工作区（迁移自上游 868f9e5 的 Seedream 编辑器） ---
+// eco_listing: 上游用 Seedream 5.0 Pro（火山引擎，需 API Key）执行编辑；本仓库
+// 走 codex，所以只保留标注/视觉定位图这套与模型无关的机制，去掉 engine/配置选择。
+
+export type SeedreamEditorResolution = '2k' | '4k'
+
+export type SeedreamAnnotationKind = 'brush' | 'rectangle' | 'ellipse' | 'arrow'
+
+export interface SeedreamAnnotationPoint {
+  /** 相对原图宽高归一化后的坐标 */
+  x: number
+  y: number
+}
+
+export interface SeedreamAnnotation {
+  id: string
+  kind: SeedreamAnnotationKind
+  color: string
+  /** 相对原图短边归一化后的线宽 */
+  width: number
+  points: SeedreamAnnotationPoint[]
+}
+
+export interface SeedreamEditorDraft {
+  sourceImageId: string | null
+  referenceImageIds: string[]
+  instruction: string
+  annotations: SeedreamAnnotation[]
+  resolution: SeedreamEditorResolution
+  latestTaskId: string | null
+  updatedAt: number
+}
+
+export interface TaskImageEditContext {
+  sourceImageId: string
+  visualGuideImageId?: string | null
+  referenceImageIds: string[]
+  userInstruction: string
+}
 export type TaskAspect = 'square' | 'landscape' | 'portrait'
 export type HistoryWorkflowFilter = 'all' | TaskWorkflow
 export type HistoryAspectFilter = 'all' | TaskAspect
@@ -172,6 +212,8 @@ export interface TaskRecord {
   customTaskId?: string
   /** 自定义异步任务是否等待自动恢复 */
   customRecoverable?: boolean
+  /** eco_listing: codex 后端的生图 job id。任务在服务端持续执行，刷新页面后可凭它续接结果 */
+  codexJobId?: string
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
@@ -182,6 +224,8 @@ export interface TaskRecord {
   inputImageIds: string[]
   maskTargetImageId?: string | null
   maskImageId?: string | null
+  /** 图片编辑任务中的输入角色与原始用户要求 */
+  imageEditContext?: TaskImageEditContext
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
   /** 流式生成的中间步骤图片 id 列表，仅失败时保留供排查/下载 */

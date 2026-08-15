@@ -34,10 +34,11 @@ import {
   CloseCircleOutlined,
   ExclamationCircleOutlined,
   DeleteOutlined,
+  PictureOutlined,
 } from '@ant-design/icons';
 import { SettingOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { createRun, startRun, listRuns, uploadFile, deleteRun } from '../api/runs';
+import { createRun, createImageStudioRun, startRun, listRuns, uploadFile, deleteRun } from '../api/runs';
 import { getAccountStatus } from '../api/account';
 import { isValidAsin, normalizeAsin } from '../utils/asinValidator';
 import type { RunSummary } from '../types/run';
@@ -255,6 +256,7 @@ export default function InputPage() {
   const [accStatus, setAccStatus] = useState<AccountStatus | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [creatingImageRun, setCreatingImageRun] = useState(false);
   const navigate = useNavigate();
 
   const fetchRuns = () => {
@@ -300,23 +302,55 @@ export default function InputPage() {
     return () => clearInterval(timer);
   }, []);
 
-  const { activeRuns, finishedRuns } = useMemo(() => {
+  const { activeRuns, finishedRuns, imageRuns } = useMemo(() => {
     const active: RunSummary[] = [];
     const finished: RunSummary[] = [];
+    // Standalone image tasks have no pipeline lifecycle, so they get their own
+    // list instead of being mixed into the Listing runs.
+    const images: RunSummary[] = [];
     for (const r of runs) {
-      if (r.status === 'pending' || r.status === 'running' || r.status === 'waiting_human' || r.status === 'paused') {
+      if (r.kind === 'image_studio') {
+        images.push(r);
+      } else if (r.status === 'pending' || r.status === 'running' || r.status === 'waiting_human' || r.status === 'paused') {
         active.push(r);
       } else {
         finished.push(r);
       }
     }
-    return { activeRuns: active, finishedRuns: finished };
+    return { activeRuns: active, finishedRuns: finished, imageRuns: images };
   }, [runs]);
 
   const activeIds = activeRuns.map((r) => r.run_id);
   const finishedIds = finishedRuns.map((r) => r.run_id);
   const activeSelected = selectedIds.filter((id) => activeIds.includes(id));
   const finishedSelected = selectedIds.filter((id) => finishedIds.includes(id));
+
+  const handleCreateImageRun = async () => {
+    setCreatingImageRun(true);
+    // Open the tab NOW, while we're still inside the click's user gesture —
+    // Safari blocks window.open once an await has passed. It's pointed at the
+    // studio only after the run exists. (`noopener` can't be used here because
+    // it makes window.open return null, so opener is cleared manually instead.)
+    const studioTab = window.open('', '_blank');
+    if (studioTab) studioTab.opener = null;
+    try {
+      const res = await createImageStudioRun(form.getFieldValue('product_name')?.trim() || '');
+      fetchRuns();
+      const url = `/run/${res.run_id}/studio`;
+      if (studioTab) {
+        studioTab.location.replace(url);
+      } else {
+        // Popup blocked — the task exists, so tell the user rather than
+        // leaving them clicking a button that appears to do nothing.
+        message.warning('生图任务已创建，但浏览器拦截了新标签页，请在下方「生图任务」中打开');
+      }
+    } catch {
+      studioTab?.close();
+      message.error('创建生图任务失败');
+    } finally {
+      setCreatingImageRun(false);
+    }
+  };
 
   const handleSubmit = async (values: FormValues) => {
     if (!keywordFile) {
@@ -567,9 +601,25 @@ export default function InputPage() {
         <Title level={3} style={{ textAlign: 'center', marginBottom: 8 }}>
           Eco Listing 生成器
         </Title>
-        <Paragraph type="secondary" style={{ textAlign: 'center', marginBottom: 24 }}>
+        <Paragraph type="secondary" style={{ textAlign: 'center', marginBottom: 16 }}>
           输入竞品信息和关键词词库，自动生成高质量亚马逊 Listing
         </Paragraph>
+
+        {/* Standalone image-generation entry: creates its own task, then opens the
+            studio in a NEW TAB. Must not be an in-app <Link> — the studio ships
+            Tailwind preflight, which would leak into these Ant Design pages. */}
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <Button
+            icon={<PictureOutlined />}
+            loading={creatingImageRun}
+            onClick={handleCreateImageRun}
+          >
+            直接生成商品图
+          </Button>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+            不跑 Listing 流程，新建一个独立生图任务并打开作图工作台
+          </Paragraph>
+        </div>
 
         <Steps
           size="small"
@@ -658,6 +708,67 @@ export default function InputPage() {
           </Form.Item>
         </Form>
       </Card>
+
+      {/* Standalone image tasks — kept separate from the Listing runs, since they
+          have no pipeline stages and open straight into the studio. */}
+      {imageRuns.length > 0 && (
+        <Card
+          size="small"
+          style={{ marginTop: 16, marginBottom: 16 }}
+          title={`生图任务（${imageRuns.length}）`}
+        >
+          {imageRuns.map((run) => (
+            <Card
+              key={run.run_id}
+              size="small"
+              hoverable
+              onClick={() => window.open(`/run/${run.run_id}/studio`, '_blank', 'noopener')}
+              style={{ marginBottom: 12, borderLeft: '3px solid #722ed1' }}
+            >
+              <Row align="middle" gutter={16} wrap={false}>
+                <Col flex="auto">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <PictureOutlined style={{ color: '#722ed1' }} />
+                    <Text strong style={{ fontSize: 14 }}>
+                      {run.product_name || run.run_id}
+                    </Text>
+                    <Tag color="purple">生图任务</Tag>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      已生成 {run.image_count ?? 0} 张
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{run.run_id}</Text>
+                  </div>
+                </Col>
+                <Col>
+                  <Space size={4}>
+                    <Button type="primary" size="small" ghost icon={<PictureOutlined />}>
+                      打开工作台
+                    </Button>
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Popconfirm
+                        title="删除生图任务"
+                        description="将永久删除该任务，已生成的图片一并从磁盘清除。"
+                        okText="删除"
+                        okButtonProps={{ danger: true }}
+                        cancelText="取消"
+                        onConfirm={() =>
+                          deleteRun(run.run_id)
+                            .then(() => { message.success('已删除'); fetchRuns(); })
+                            .catch(() => message.error('删除失败'))
+                        }
+                      >
+                        <Button danger size="small" icon={<DeleteOutlined />} />
+                      </Popconfirm>
+                    </span>
+                  </Space>
+                </Col>
+              </Row>
+            </Card>
+          ))}
+        </Card>
+      )}
 
       {/* Finished tasks — always visible */}
       <Card

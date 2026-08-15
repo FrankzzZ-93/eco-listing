@@ -7,6 +7,14 @@ export async function createRun(data: CreateRunRequest): Promise<CreateRunRespon
   return res.data;
 }
 
+/** Create a standalone image-generation task (no ASINs, never enters the pipeline). */
+export async function createImageStudioRun(productName: string): Promise<{ run_id: string }> {
+  const res = await client.post<{ run_id: string }>('/runs/image-studio', {
+    product_name: productName,
+  });
+  return res.data;
+}
+
 export async function listRuns(): Promise<RunSummary[]> {
   const res = await client.get<RunSummary[]>('/runs');
   return res.data;

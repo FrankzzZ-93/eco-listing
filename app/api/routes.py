@@ -104,6 +104,12 @@ class GenerateImagesRequest(BaseModel):
     # to keep the generated product consistent. Resolved to local paths server-side.
     reference_urls: list[str] = []
     white_bg: bool = False
+    # Local editing ("遮罩"). mask_url is a PNG whose alpha marks the editable
+    # region; mask_target_url is the image it was drawn on. When both are set,
+    # the generated frame is composited back onto the target through the mask so
+    # pixels outside the painted area are preserved exactly.
+    mask_url: Optional[str] = None
+    mask_target_url: Optional[str] = None
 
 
 # --- Endpoints ---
@@ -138,6 +144,38 @@ async def create_run(req: CreateRunRequest):
     await graph.aupdate_state(config, initial_state, as_node="__start__")
 
     return {"run_id": run_id, "status": "pending"}
+
+
+class CreateImageStudioRunRequest(BaseModel):
+    product_name: str = ""
+
+
+@router.post("/runs/image-studio", status_code=201)
+async def create_image_studio_run(req: CreateImageStudioRunRequest):
+    """Create a standalone image-generation task.
+
+    It gets a real run_id and checkpoint thread — so it appears in the run list
+    and its images persist under ``artifacts/{run_id}/`` like any other run —
+    but it is never started, so it never enters the LangGraph pipeline. The
+    image endpoints below only need a run_id, so nothing else is required.
+    """
+    # Same id shape as pipeline runs: created_at_from_run_id() parses the date
+    # out of it, so a different prefix would sort to the epoch.
+    run_id = f"run_{datetime.date.today():%Y%m%d}_{uuid.uuid4().hex[:6]}"
+
+    graph = _get_graph()
+    initial_state = {
+        "run_id": run_id,
+        "kind": "image_studio",
+        "product_name": req.product_name.strip(),
+        "competitor_asins": [],
+        "site": "",
+        "status": "image_studio",
+    }
+    config = {"configurable": {"thread_id": run_id}}
+    await graph.aupdate_state(config, initial_state, as_node="__start__")
+
+    return {"run_id": run_id, "kind": "image_studio"}
 
 
 @router.post("/runs/{run_id}/start")
@@ -180,67 +218,105 @@ async def list_runs():
     ]
     total_steps = len(progress_keys)
 
-    results = []
-    for rid in run_ids:
-        status = "unknown"
-        completed_steps = 0
-        current_step = ""
-        current_agent = None
-        product_name = ""
-        site = "amazon.com"
-        competitor_asins: list = []
+    def summarize_image_studio(rid: str, snapshot: dict) -> dict:
+        """A standalone image task never enters the graph, so it reports the
+        images it holds instead of pipeline progress."""
+        from app.tools.image_gen_tool import list_generated_images
 
         try:
-            config = {"configurable": {"thread_id": rid}}
-            state = await graph.aget_state(config)
-            if state and state.values:
-                snapshot = state.values
-                product_name = snapshot.get("product_name", "") or ""
-                site = snapshot.get("site", "amazon.com")
-                competitor_asins = snapshot.get("competitor_asins", []) or []
-                status = snapshot.get("status", "running")
-                next_nodes = state.next if state.next else ()
-                if next_nodes and any(
-                    n in next_nodes
-                    for n in _WAITING_NODES
-                ):
-                    status = "waiting_human"
+            image_count = len(list_generated_images(rid))
+        except OSError:
+            image_count = 0
+        return {
+            "kind": "image_studio",
+            "product_name": snapshot.get("product_name", "") or "",
+            "site": "",
+            "competitor_asins": [],
+            "status": "image_studio",
+            "completed_steps": 0,
+            "total_steps": 0,
+            "current_step": "",
+            "current_agent": None,
+            "image_count": image_count,
+        }
 
-                # When a ready-made attribute table is uploaded, the competitor
-                # scraping step is intentionally skipped — treat it as done so
-                # progress doesn't get stuck on "竞品数据采集".
-                attrs_present = MemoryHelper.has(snapshot, "product_attributes_draft")
-                for key, label in progress_keys:
-                    done = MemoryHelper.has(snapshot, key)
-                    if not done and key == "competitor_listings" and attrs_present:
-                        done = True
-                    if done:
-                        completed_steps += 1
-                    elif not current_step:
-                        current_step = label
+    def summarize_pipeline(state, snapshot: dict) -> dict:
+        """Listing pipeline run: progress is how many of the 7 stages are done."""
+        status = snapshot.get("status", "running")
+        next_nodes = state.next if state.next else ()
+        if next_nodes and any(n in next_nodes for n in _WAITING_NODES):
+            status = "waiting_human"
 
-                current_agent = snapshot.get("current_agent")
-                if not current_agent:
-                    last_logs = snapshot.get("agent_log", [])
-                    if last_logs:
-                        current_agent = last_logs[-1].get("agent")
+        completed_steps = 0
+        current_step = ""
+        # When a ready-made attribute table is uploaded, the competitor scraping
+        # step is intentionally skipped — treat it as done so progress doesn't
+        # get stuck on "竞品数据采集".
+        attrs_present = MemoryHelper.has(snapshot, "product_attributes_draft")
+        for key, label in progress_keys:
+            done = MemoryHelper.has(snapshot, key)
+            if not done and key == "competitor_listings" and attrs_present:
+                done = True
+            if done:
+                completed_steps += 1
+            elif not current_step:
+                current_step = label
 
-                if not current_step and status == "running":
-                    current_step = progress_keys[0][1]
-        except Exception:
-            pass
+        current_agent = snapshot.get("current_agent")
+        if not current_agent:
+            last_logs = snapshot.get("agent_log", [])
+            if last_logs:
+                current_agent = last_logs[-1].get("agent")
 
-        results.append({
-            "run_id": rid,
-            "product_name": product_name,
-            "site": site,
-            "competitor_asins": competitor_asins,
-            "created_at": created_at_from_run_id(rid),
+        if not current_step and status == "running":
+            current_step = progress_keys[0][1]
+
+        return {
+            "kind": "",
+            "product_name": snapshot.get("product_name", "") or "",
+            "site": snapshot.get("site", "amazon.com"),
+            "competitor_asins": snapshot.get("competitor_asins", []) or [],
             "status": status,
             "completed_steps": completed_steps,
             "total_steps": total_steps,
             "current_step": current_step,
             "current_agent": current_agent,
+            "image_count": 0,
+        }
+
+    unknown_summary = {
+        "kind": "",
+        "product_name": "",
+        "site": "amazon.com",
+        "competitor_asins": [],
+        "status": "unknown",
+        "completed_steps": 0,
+        "total_steps": total_steps,
+        "current_step": "",
+        "current_agent": None,
+        "image_count": 0,
+    }
+
+    results = []
+    for rid in run_ids:
+        summary = dict(unknown_summary)
+        try:
+            config = {"configurable": {"thread_id": rid}}
+            state = await graph.aget_state(config)
+            if state and state.values:
+                snapshot = state.values
+                summary = (
+                    summarize_image_studio(rid, snapshot)
+                    if (snapshot.get("kind") or "") == "image_studio"
+                    else summarize_pipeline(state, snapshot)
+                )
+        except Exception:
+            pass
+
+        results.append({
+            "run_id": rid,
+            "created_at": created_at_from_run_id(rid),
+            **summary,
         })
 
     # Newest first (matches the old registry ordering by created_at desc).
@@ -896,16 +972,24 @@ async def delete_run(run_id: str):
     Purges the LangGraph checkpoint thread — the run's only persistence. Since
     the run list is derived from the checkpoint DB, deleting the thread removes
     the run from the list for good.
+
+    For an image-studio run the generated images ARE the run: nothing else
+    references them and no UI can reach them once the thread is gone, so its
+    artifacts directory is removed too rather than left orphaned on disk.
     """
     import logging
+    import shutil
 
     from app.api._state import get_run_task, remove_run_task
 
+    logger = logging.getLogger("eco_listing")
     graph = _get_graph()
     config = {"configurable": {"thread_id": run_id}}
     state = await graph.aget_state(config)
     if not state or not state.values:
         raise HTTPException(404, "Run not found")
+
+    is_image_studio = (state.values.get("kind") or "") == "image_studio"
 
     task = get_run_task(run_id)
     if task and not task.done():
@@ -915,9 +999,21 @@ async def delete_run(run_id: str):
     try:
         await graph.checkpointer.adelete_thread(run_id)
     except Exception:
-        logging.getLogger("eco_listing").warning(
+        logger.warning(
             "Failed to purge checkpoint for deleted run %s", run_id, exc_info=True
         )
+
+    if is_image_studio:
+        # Guard against a crafted run_id escaping the artifacts root before rmtree.
+        base = os.path.abspath(settings.artifacts_dir)
+        run_dir = os.path.abspath(os.path.join(base, run_id))
+        if run_dir.startswith(base + os.sep) and os.path.isdir(run_dir):
+            try:
+                shutil.rmtree(run_dir)
+            except OSError:
+                logger.warning(
+                    "Failed to remove artifacts for deleted image run %s", run_id, exc_info=True
+                )
 
     return {"status": "deleted"}
 
@@ -1123,6 +1219,14 @@ async def generate_run_images(run_id: str, req: GenerateImagesRequest):
         raise HTTPException(400, "生图提示词不能为空")
 
     ref_paths = [p for u in req.reference_urls if (p := from_artifact_url(u))]
+
+    mask_path = from_artifact_url(req.mask_url) if req.mask_url else None
+    mask_target_path = from_artifact_url(req.mask_target_url) if req.mask_target_url else None
+    if req.mask_url and not mask_path:
+        raise HTTPException(400, "遮罩图片无效")
+    if mask_path and not mask_target_path:
+        raise HTTPException(400, "遮罩缺少对应的主图")
+
     params = {
         "prompt": req.prompt.strip(),
         "n": req.n,
@@ -1130,6 +1234,8 @@ async def generate_run_images(run_id: str, req: GenerateImagesRequest):
         "quality": req.quality,
         "white_bg": req.white_bg,
         "reference_urls": req.reference_urls,
+        "mask_path": mask_path,
+        "mask_target_path": mask_target_path,
     }
     job = await create_job(run_id, params)
     # Fire-and-forget: the task persists its own outcome to the jobs sidecar.

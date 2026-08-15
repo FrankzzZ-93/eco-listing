@@ -7,6 +7,11 @@ from typing import Annotated, TypedDict
 class ListingState(TypedDict):
     # --- 输入 ---
     run_id: str
+    # Task flavour. "" (default) = the full Listing pipeline. "image_studio" =
+    # a standalone image-generation workspace: it owns a run_id (so its images
+    # land under artifacts/{run_id}/ and it shows up in the run list) but never
+    # enters the graph, so none of the pipeline fields below apply to it.
+    kind: str
     site: str
     competitor_asins: list[str]
     # User-facing label shown in the run list. Persisted in the checkpoint so the

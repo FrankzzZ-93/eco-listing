@@ -80,6 +80,7 @@ export interface RunDetail {
 
 export interface CreateRunRequest {
   product_name?: string;
+  brand_name: string;
   competitor_asins: string[];
   site: string;
 }

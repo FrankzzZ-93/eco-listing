@@ -44,6 +44,14 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
     return <Empty description="最终 Listing 数据缺失" />;
   }
 
+  // Limits the copywriter enforced for this listing (falls back to defaults).
+  const lim = output.length_limits ?? {};
+  const titleMax = lim.title_max_chars ?? 75;
+  const highlightsMax = lim.item_highlights_max_chars ?? 125;
+  const bulletsMax = lim.bullets_total_max_bytes ?? 1000;
+  const descMax = lim.description_max_chars ?? 2000;
+  const stMax = lim.st_max_bytes ?? 249;
+
   const bullets = listing.bullet_points ?? [];
   const bulletsJoined = bullets.join('\n');
   const bulletsBytes = getByteLength(bulletsJoined);
@@ -130,7 +138,7 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
             <Descriptions.Item label="文案中使用">{report.used_in_listing}</Descriptions.Item>
             <Descriptions.Item label="加入 ST">{report.added_to_st}</Descriptions.Item>
             <Descriptions.Item label="ST 字节">
-              <Tag color={report.total_bytes > 249 ? 'red' : 'green'}>{report.total_bytes} / 249</Tag>
+              <Tag color={report.total_bytes > stMax ? 'red' : 'green'}>{report.total_bytes} / {stMax}</Tag>
             </Descriptions.Item>
           </Descriptions>
         )}
@@ -140,15 +148,25 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
         title="标题 (Title)"
         content={listing.title ?? ''}
         currentCount={getCharLength(listing.title ?? '')}
-        maxCount={200}
+        maxCount={titleMax}
         unit="字符"
       />
+
+      {listing.item_highlights !== undefined && (
+        <SectionCard
+          title="Item Highlights"
+          content={listing.item_highlights}
+          currentCount={getCharLength(listing.item_highlights)}
+          maxCount={highlightsMax}
+          unit="字符"
+        />
+      )}
 
       <SectionCard
         title="五点描述 (Bullet Points)"
         content={bulletsJoined}
         currentCount={bulletsBytes}
-        maxCount={1000}
+        maxCount={bulletsMax}
         unit="字节"
       >
         <div style={{ background: '#fafafa', padding: 12, borderRadius: 6 }}>
@@ -179,7 +197,7 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
             <Text strong>产品描述 (Description)</Text>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {getCharLength(listing.description ?? '')} / 2000 字符
+                {getCharLength(listing.description ?? '')} / {descMax} 字符
               </Text>
               <CopyButton text={listing.description ?? ''} />
             </div>
@@ -224,7 +242,7 @@ export default function ListingPreview({ output, loading, runId, canRegenerate, 
         title="Search Terms"
         content={searchTermsStr}
         currentCount={getByteLength(searchTermsStr)}
-        maxCount={249}
+        maxCount={stMax}
         unit="字节"
       >
         <div style={{ background: '#fafafa', padding: 12, borderRadius: 6 }}>

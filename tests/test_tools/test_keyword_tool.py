@@ -152,3 +152,28 @@ class TestSTOptimize:
         # Shared words appear exactly once.
         assert st.count("closet") == 1
         assert st.count("organizer") == 1
+
+    def test_string_st_v3_is_split_into_words(self):
+        tool = KeywordTool()
+        listing = {"title": "Belt Hanger", "bullet_points": [], "description": ""}
+        result = tool.optimize_st(listing, "closet organizer", {})
+        assert result["final_st"] == ["closet", "organizer"]
+
+    def test_item_highlights_words_count_as_indexed(self):
+        tool = KeywordTool()
+        listing = {
+            "title": "Belt Hanger",
+            "item_highlights": "Holds belts in your closet",
+            "bullet_points": [],
+            "description": "",
+        }
+        result = tool.optimize_st(listing, ["closet organizer"], {})
+        assert "closet" not in result["final_st"]
+        assert "organizer" in result["final_st"]
+
+    def test_custom_byte_budget(self):
+        tool = KeywordTool()
+        listing = {"title": "", "bullet_points": [], "description": ""}
+        result = tool.optimize_st(listing, ["alpha beta gamma"], {}, st_byte_budget=10)
+        assert result["final_st"] == ["alpha", "beta"]
+        assert result["word_frequency_report"]["total_bytes"] <= 10

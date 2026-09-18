@@ -81,6 +81,8 @@ def _is_actively_running(run_id: str) -> bool:
 
 class CreateRunRequest(BaseModel):
     product_name: str = ""
+    # Brand / trademark; the v3 copywriter prompts put it as the title's first word.
+    brand_name: str = ""
     competitor_asins: list[str]
     site: str = "amazon.com.au"
 
@@ -122,23 +124,19 @@ async def create_run(req: CreateRunRequest):
 
     run_id = f"run_{datetime.date.today():%Y%m%d}_{uuid.uuid4().hex[:6]}"
 
+    from app.app_settings import get_listing_limits
+
     graph = _get_graph()
     initial_state = {
         "run_id": run_id,
         "product_name": req.product_name,
+        "brand_name": (req.brand_name or "").strip(),
         "competitor_asins": req.competitor_asins,
         "site": req.site,
         "status": "pending",
-        "length_limits": {
-            "title_max_chars": settings.title_max_chars,
-            "bullet_max_chars": settings.bullet_max_chars,
-            "bullets_total_max_bytes": settings.bullets_total_max_bytes,
-            "description_max_chars": settings.description_max_chars,
-            "st_max_bytes": settings.st_max_bytes,
-            "title_min_chars": settings.title_min_chars,
-            "bullets_total_min_bytes": settings.bullets_total_min_bytes,
-            "description_min_chars": settings.description_min_chars,
-        },
+        # Snapshot of the settings-page rules; the copywriter re-reads the live
+        # settings when it runs and writes back the limits it actually used.
+        "length_limits": get_listing_limits(),
     }
     config = {"configurable": {"thread_id": run_id}}
     await graph.aupdate_state(config, initial_state, as_node="__start__")
@@ -1185,6 +1183,7 @@ async def get_final(run_id: str):
         "final_listing": s["final_listing"],
         "final_st": s["final_st"],
         "word_frequency_report": s.get("word_frequency_report", {}),
+        "length_limits": s.get("length_limits", {}),
         "download": {
             "json": f"/artifacts/{run_id}/final/final_listing.json",
             "markdown": f"/artifacts/{run_id}/final/final_listing.md",
@@ -1420,10 +1419,23 @@ class ScrapeUpdate(BaseModel):
     codex_timeout: Optional[int] = None
 
 
+class ListingLimitsUpdate(BaseModel):
+    title_max_chars: Optional[int] = None
+    item_highlights_max_chars: Optional[int] = None
+    bullet_max_chars: Optional[int] = None
+    bullets_total_max_bytes: Optional[int] = None
+    description_max_chars: Optional[int] = None
+    st_max_bytes: Optional[int] = None
+    title_min_chars: Optional[int] = None
+    bullets_total_min_bytes: Optional[int] = None
+    description_min_chars: Optional[int] = None
+
+
 class UpdateAppSettingsRequest(BaseModel):
     account: Optional[AccountUpdate] = None
     scrape: Optional[ScrapeUpdate] = None
     review_engine: Optional[str] = None
+    listing_limits: Optional[ListingLimitsUpdate] = None
 
 
 @router.get("/settings/app")
@@ -1466,6 +1478,24 @@ async def update_app_settings_route(req: UpdateAppSettingsRequest):
 
     if req.review_engine is not None:
         current["review_engine"] = req.review_engine
+
+    if req.listing_limits is not None:
+        limits = current["listing_limits"]
+        for field in app_settings.LISTING_MAX_KEYS:
+            val = getattr(req.listing_limits, field)
+            if val is not None:
+                if val <= 0:
+                    raise HTTPException(400, f"{field} 必须为正整数")
+                limits[field] = val
+        for field in app_settings.LISTING_MIN_KEYS:
+            val = getattr(req.listing_limits, field)
+            if val is not None:
+                if val < 0:
+                    raise HTTPException(400, f"{field} 不能为负数")
+                limits[field] = val
+        for min_key, max_key in app_settings.LISTING_MIN_MAX_PAIRS:
+            if limits[min_key] and limits[min_key] >= limits[max_key]:
+                raise HTTPException(400, f"{min_key} 必须小于 {max_key}")
 
     saved = app_settings.save_app_settings(current)
     return app_settings.public_view(saved)

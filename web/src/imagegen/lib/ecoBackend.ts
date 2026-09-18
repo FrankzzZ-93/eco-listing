@@ -238,12 +238,18 @@ export async function fetchEcoListingText(): Promise<string | null> {
     const res = await fetch(`${apiBase()}/final`, { cache: 'no-store' })
     if (!res.ok) return null
     const data = (await res.json()) as {
-      final_listing?: { title?: string; bullet_points?: string[]; description?: string }
+      final_listing?: {
+        title?: string
+        item_highlights?: string
+        bullet_points?: string[]
+        description?: string
+      }
     }
     const l = data.final_listing
     if (!l) return null
     const lines: string[] = []
     if (l.title) lines.push(`Title: ${l.title}`)
+    if (l.item_highlights) lines.push(`Item Highlights: ${l.item_highlights}`)
     const bullets = l.bullet_points ?? []
     if (bullets.length) {
       lines.push('', 'About this item')

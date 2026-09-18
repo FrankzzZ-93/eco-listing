@@ -27,13 +27,26 @@ class ComplianceTool:
         "bonus",
         "limited time",
     ]
-    MAX_TITLE = 200
+    # Pipeline-internal wording ("confirmed" facts, the attribute table) that
+    # must never leak into buyer-facing copy, e.g. a "FOR CONFIRMED SPACES"
+    # bullet header derived from the prompt's "已确认的适用场景".
+    INTERNAL_TERMS = [
+        "confirmed",
+        "attribute table",
+        "attributes table",
+        "per the attributes",
+        "fact source",
+        "已确认",
+        "属性表",
+    ]
+    MAX_TITLE = 75
+    MAX_ITEM_HIGHLIGHTS = 125
     MAX_BULLET = 500
     MAX_BULLETS_TOTAL_BYTES = 1000
     MAX_DESCRIPTION = 2000
     MAX_ST_BYTES = 249
     # Soft minimums (encourage fuller content; never block a run).
-    MIN_TITLE = 120
+    MIN_TITLE = 0
     MIN_BULLETS_TOTAL_BYTES = 700
     MIN_DESCRIPTION = 1500
 
@@ -49,9 +62,14 @@ class ComplianceTool:
                 parts.append(f.read())
         return "\n\n---\n\n".join(parts)
 
-    def validate(self, listing: dict, limits: dict | None = None) -> list[str]:
+    def validate(
+        self, listing: dict, limits: dict | None = None, brand: str | None = None
+    ) -> list[str]:
         limits = limits or {}
         max_title = limits.get("title_max_chars", self.MAX_TITLE)
+        max_highlights = limits.get(
+            "item_highlights_max_chars", self.MAX_ITEM_HIGHLIGHTS
+        )
         max_bullet = limits.get("bullet_max_chars", self.MAX_BULLET)
         max_bullets_total = limits.get(
             "bullets_total_max_bytes", self.MAX_BULLETS_TOTAL_BYTES
@@ -76,6 +94,29 @@ class ComplianceTool:
             violations.append(
                 f"标题过短: {len(title)} < {min_title} 字符（请丰富标题至接近上限 {max_title}）"
             )
+
+        brand = (brand or "").strip()
+        if brand and title:
+            stripped = title.lstrip()
+            rest = stripped[len(brand):]
+            if not stripped.startswith(brand) or (rest and rest[0].isalnum()):
+                violations.append(
+                    f'标题首词必须是品牌 "{brand}"（拼写和大小写与品牌一致）'
+                )
+
+        # Item Highlights is only validated when the listing carries the field
+        # (the v3 prompts always emit it; older listings never had it).
+        highlights = ""
+        if "item_highlights" in listing:
+            highlights = str(listing.get("item_highlights") or "")
+            if not highlights.strip():
+                violations.append("Item Highlights 为空，必须输出完整的 Item Highlights")
+            elif len(highlights) > max_highlights:
+                violations.append(
+                    f"Item Highlights 超长: {len(highlights)} > {max_highlights} 字符"
+                )
+            elif title and highlights.strip().lower() == title.strip().lower():
+                violations.append("Item Highlights 与标题完全重复，需补充标题之外的信息")
         for i, bp in enumerate(bullets):
             if len(bp) > max_bullet:
                 violations.append(f"Bullet #{i + 1} 超长: {len(bp)} > {max_bullet} 字符")
@@ -129,10 +170,19 @@ class ComplianceTool:
         if st_bytes > max_st_bytes:
             violations.append(f"Search Terms 超长: {st_bytes} > {max_st_bytes} bytes")
 
-        all_text = f"{title} {' '.join(bullets)} {desc} {st_str}"
+        all_text = f"{title} {highlights} {' '.join(bullets)} {desc} {st_str}"
         for word in self.FORBIDDEN_WORDS:
             if re.search(rf"\b{re.escape(word)}\b", all_text.lower()):
                 violations.append(f'禁用词: "{word}"')
+        for term in self.INTERNAL_TERMS:
+            # CJK characters count as word chars, so \b would miss them inside
+            # Chinese text; match those as plain substrings.
+            pattern = rf"\b{re.escape(term)}\b" if term.isascii() else re.escape(term)
+            if re.search(pattern, all_text.lower()):
+                violations.append(
+                    f'出现内部流程用语 "{term}"：不得把写作依据写进文案，'
+                    f"请改写为面向买家的卖点表达"
+                )
 
         asin_hits = sorted(set(ASIN_RE.findall(all_text)))
         for hit in asin_hits:

@@ -185,6 +185,7 @@ async def st_optimize_node(state: ListingState, toolbox: ToolBox) -> dict:
         listing=state["final_listing"],
         st_v3=state.get("st_v3", []),
         classified_keywords=state.get("classified_keywords", {}),
+        st_byte_budget=(state.get("length_limits") or {}).get("st_max_bytes"),
     )
 
     toolbox.file_store.write_json(state["run_id"], "final_st.json", result)

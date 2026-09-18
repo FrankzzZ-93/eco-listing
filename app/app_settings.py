@@ -12,6 +12,9 @@ homepage config entry edits:
   ``codex_timeout``). Values here override the ``.env`` defaults at runtime.
 - **review_engine**: which scraper handles competitor reviews
   (``real_chrome`` = logged-in real Chrome, ``builtin`` = Playwright+Codex).
+- **listing_limits**: listing length rules (title / Item Highlights / bullets /
+  description / Search Terms maximums plus the soft minimums). Read by the
+  copywriter at generation time; defaults come from :mod:`app.config`.
 
 Settings persist to ``app_settings.json`` (atomic write) and are read at runtime
 so changes take effect without a server restart. Secrets are masked in
@@ -34,6 +37,27 @@ ENGINE_BROWSER_ACT = "browser_act"  # legacy id, auto-migrated to real_chrome
 ENGINE_BUILTIN = "builtin"  # Playwright + Codex fallback only
 VALID_ENGINES = (ENGINE_REAL_CHROME, ENGINE_BUILTIN)
 
+# Hard maximums must be > 0; soft minimums may be 0 (= check disabled).
+LISTING_MAX_KEYS = (
+    "title_max_chars",
+    "item_highlights_max_chars",
+    "bullet_max_chars",
+    "bullets_total_max_bytes",
+    "description_max_chars",
+    "st_max_bytes",
+)
+LISTING_MIN_KEYS = (
+    "title_min_chars",
+    "bullets_total_min_bytes",
+    "description_min_chars",
+)
+# (min key, max key) pairs that must satisfy min < max.
+LISTING_MIN_MAX_PAIRS = (
+    ("title_min_chars", "title_max_chars"),
+    ("bullets_total_min_bytes", "bullets_total_max_bytes"),
+    ("description_min_chars", "description_max_chars"),
+)
+
 
 def _defaults() -> dict[str, Any]:
     return {
@@ -53,6 +77,9 @@ def _defaults() -> dict[str, Any]:
             "codex_timeout": env_settings.codex_timeout,
         },
         "review_engine": ENGINE_REAL_CHROME,
+        "listing_limits": {
+            k: getattr(env_settings, k) for k in LISTING_MAX_KEYS + LISTING_MIN_KEYS
+        },
     }
 
 
@@ -80,6 +107,20 @@ def _normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
             engine = ENGINE_REAL_CHROME  # migrate the legacy browser-act setting
         if engine in VALID_ENGINES:
             cfg["review_engine"] = engine
+        limits = raw.get("listing_limits")
+        if isinstance(limits, dict):
+            for k in LISTING_MAX_KEYS:
+                v = limits.get(k)
+                if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                    cfg["listing_limits"][k] = v
+            for k in LISTING_MIN_KEYS:
+                v = limits.get(k)
+                if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                    cfg["listing_limits"][k] = v
+        # A minimum at/above its maximum could never be satisfied: disable it.
+        for min_key, max_key in LISTING_MIN_MAX_PAIRS:
+            if cfg["listing_limits"][min_key] >= cfg["listing_limits"][max_key]:
+                cfg["listing_limits"][min_key] = 0
     if not cfg["account"]["site"]:
         cfg["account"]["site"] = "amazon.com"
     return cfg
@@ -140,6 +181,10 @@ def get_scrape_param(name: str, default: Any = None) -> Any:
     return get_app_settings()["scrape"].get(name, default)
 
 
+def get_listing_limits() -> dict[str, int]:
+    return get_app_settings()["listing_limits"]
+
+
 def public_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Mask the account password for safe transport to the frontend."""
     cfg = cfg or get_app_settings()
@@ -153,4 +198,5 @@ def public_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         },
         "scrape": dict(cfg["scrape"]),
         "review_engine": cfg.get("review_engine", ENGINE_REAL_CHROME),
+        "listing_limits": dict(cfg["listing_limits"]),
     }

@@ -286,6 +286,7 @@ class KeywordTool:
         listing: dict,
         st_v3: list[str],
         classified_keywords: dict,
+        st_byte_budget: int | None = None,
     ) -> dict:
         """Build backend Search Terms as a bag of unique single words.
 
@@ -297,11 +298,16 @@ class KeywordTool:
         duplication (e.g. "closet organizer" + "closet organization" both
         re-spending bytes on "closet").
         """
-        st_byte_budget = settings.st_max_bytes
+        if not st_byte_budget:
+            st_byte_budget = settings.st_max_bytes
+        # A space-separated string must be split, not iterated char-by-char.
+        if isinstance(st_v3, str):
+            st_v3 = st_v3.split()
 
         listing_text = " ".join(
             [
                 listing.get("title", ""),
+                listing.get("item_highlights", ""),
                 " ".join(listing.get("bullet_points", [])),
                 listing.get("description", ""),
             ]

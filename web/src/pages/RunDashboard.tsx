@@ -336,6 +336,11 @@ export default function RunDashboard() {
                 <Descriptions.Item label="五点描述">
                   {(finalOutput.final_listing.bullet_points ?? []).length} 条
                 </Descriptions.Item>
+                {finalOutput.final_listing.item_highlights !== undefined && (
+                  <Descriptions.Item label="Item Highlights" span={2}>
+                    {finalOutput.final_listing.item_highlights}
+                  </Descriptions.Item>
+                )}
                 <Descriptions.Item label="Search Terms">
                   {(() => {
                     const bytes = finalOutput.word_frequency_report?.total_bytes;
@@ -344,7 +349,9 @@ export default function RunDashboard() {
                       <Space>
                         <Tag>{count} 个词</Tag>
                         {bytes !== undefined && (
-                          <Tag color={bytes > 249 ? 'red' : 'green'}>{bytes} 字节</Tag>
+                          <Tag color={bytes > (finalOutput.length_limits?.st_max_bytes ?? 249) ? 'red' : 'green'}>
+                            {bytes} 字节
+                          </Tag>
                         )}
                       </Space>
                     );

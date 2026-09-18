@@ -23,6 +23,19 @@ export interface LlmTestResult {
 
 export type ReviewEngine = 'real_chrome' | 'builtin';
 
+// Listing length rules edited on the settings page. Minimums: 0 = not checked.
+export interface ListingLimits {
+  title_max_chars: number;
+  item_highlights_max_chars: number;
+  bullet_max_chars: number;
+  bullets_total_max_bytes: number;
+  description_max_chars: number;
+  st_max_bytes: number;
+  title_min_chars: number;
+  bullets_total_min_bytes: number;
+  description_min_chars: number;
+}
+
 export interface AppSettings {
   account: {
     site: string;
@@ -37,6 +50,7 @@ export interface AppSettings {
     codex_timeout: number;
   };
   review_engine: ReviewEngine;
+  listing_limits: ListingLimits;
 }
 
 export interface AppSettingsUpdate {
@@ -49,6 +63,7 @@ export interface AppSettingsUpdate {
   };
   scrape?: Partial<AppSettings['scrape']>;
   review_engine?: ReviewEngine;
+  listing_limits?: Partial<ListingLimits>;
 }
 
 export type AccountState =

@@ -58,6 +58,7 @@ const SITES = [
 interface FormValues {
   site: string;
   product_name: string;
+  brand_name: string;
   competitor_asins: { asin: string }[];
 }
 
@@ -372,6 +373,7 @@ export default function InputPage() {
     try {
       const res = await createRun({
         product_name: values.product_name?.trim() || '',
+        brand_name: values.brand_name.trim(),
         competitor_asins: competitorAsins,
         site: values.site,
       });
@@ -642,6 +644,18 @@ export default function InputPage() {
             <Col span={12}>
               <Form.Item name="product_name" label="产品名称" tooltip="给本次任务起个名字，方便辨认（选填）">
                 <Input placeholder="如：无线蓝牙耳机、瑜伽垫 等" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                name="brand_name"
+                label="品牌 / 商标"
+                tooltip="生成的标题会以品牌作为首词，请与后台 Brand 字段的拼写和大小写保持一致"
+                rules={[{ required: true, whitespace: true, message: '请填写品牌 / 商标' }]}
+              >
+                <Input placeholder="如：Anker" />
               </Form.Item>
             </Col>
           </Row>

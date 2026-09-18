@@ -17,6 +17,8 @@ class ListingState(TypedDict):
     # User-facing label shown in the run list. Persisted in the checkpoint so the
     # run list can be derived entirely from checkpoints.db (no separate registry).
     product_name: str
+    # Brand / trademark entered at create time; first word of the listing title.
+    brand_name: str
 
     # --- Phase 1: 认知层 ---
     competitor_listings: list[dict]
@@ -48,6 +50,7 @@ class ListingState(TypedDict):
     pending_action: dict
     agent_log: Annotated[list, operator.add]
     error: str
-    # Per-run length limits (title/bullet/description chars, ST bytes). Seeded
-    # from settings at create time; enforced in the copywriter round-3 loop.
+    # Length limits (title / Item Highlights / bullet / description chars, ST
+    # bytes). Seeded at create time; the copywriter re-reads the live settings
+    # and writes back the limits it enforced.
     length_limits: dict

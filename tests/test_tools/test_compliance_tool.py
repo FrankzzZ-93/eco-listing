@@ -73,3 +73,104 @@ class TestComplianceValidate:
         }
         violations = self.tool.validate(listing)
         assert len(violations) >= 3  # title length + best + guaranteed
+
+
+class TestItemHighlightsAndBrand:
+    def setup_method(self):
+        self.tool = ComplianceTool()
+
+    def _listing(self, **overrides):
+        base = {
+            "title": "Acme Widget for Home Use",
+            "item_highlights": "Compact widget that fits small desks",
+            "bullet_points": [],
+            "description": "",
+        }
+        return {**base, **overrides}
+
+    def test_default_title_limit_is_75(self):
+        violations = self.tool.validate(self._listing(title="Acme " + "A" * 71))
+        assert any("标题超长: 76 > 75" in v for v in violations)
+
+    def test_item_highlights_too_long(self):
+        violations = self.tool.validate(self._listing(item_highlights="H" * 126))
+        assert any("Item Highlights 超长: 126 > 125" in v for v in violations)
+
+    def test_item_highlights_limit_from_settings(self):
+        limits = {"item_highlights_max_chars": 10}
+        violations = self.tool.validate(self._listing(), limits)
+        assert any("Item Highlights 超长" in v for v in violations)
+
+    def test_item_highlights_empty(self):
+        violations = self.tool.validate(self._listing(item_highlights="  "))
+        assert any("Item Highlights 为空" in v for v in violations)
+
+    def test_item_highlights_duplicates_title(self):
+        violations = self.tool.validate(
+            self._listing(item_highlights="acme widget for home use")
+        )
+        assert any("与标题完全重复" in v for v in violations)
+
+    def test_listing_without_item_highlights_key_is_not_flagged(self):
+        listing = self._listing()
+        del listing["item_highlights"]
+        assert not any("Item Highlights" in v for v in self.tool.validate(listing))
+
+    def test_forbidden_word_in_item_highlights(self):
+        violations = self.tool.validate(self._listing(item_highlights="The best widget"))
+        assert any('"best"' in v for v in violations)
+
+    def test_brand_first_word_ok(self):
+        violations = self.tool.validate(self._listing(), brand="Acme")
+        assert not any("品牌" in v for v in violations)
+
+    def test_brand_missing_from_title(self):
+        violations = self.tool.validate(self._listing(title="Widget by Acme"), brand="Acme")
+        assert any('标题首词必须是品牌 "Acme"' in v for v in violations)
+
+    def test_brand_case_must_match(self):
+        violations = self.tool.validate(self._listing(title="ACME Widget"), brand="Acme")
+        assert any("品牌" in v for v in violations)
+
+    def test_brand_glued_to_next_word(self):
+        violations = self.tool.validate(self._listing(title="AcmePro Widget"), brand="Acme")
+        assert any("品牌" in v for v in violations)
+
+    def test_no_brand_skips_check(self):
+        violations = self.tool.validate(self._listing(title="Widget for Home"), brand="")
+        assert not any("品牌" in v for v in violations)
+
+
+class TestInternalTerms:
+    def setup_method(self):
+        self.tool = ComplianceTool()
+
+    def _listing(self, bullet):
+        return {
+            "title": "Acme Belt Hanger",
+            "item_highlights": "Holds belts and ties",
+            "bullet_points": [bullet],
+            "description": "",
+        }
+
+    def test_confirmed_header_flagged(self):
+        violations = self.tool.validate(
+            self._listing("FOR CONFIRMED SPACES: Use it in bedrooms and dorms")
+        )
+        assert any('内部流程用语 "confirmed"' in v for v in violations)
+
+    def test_attribute_table_flagged(self):
+        violations = self.tool.validate(
+            self._listing("SIZE: Dimensions per the attributes are 10 inches")
+        )
+        assert any('"per the attributes"' in v for v in violations)
+
+    def test_chinese_term_flagged(self):
+        violations = self.tool.validate(self._listing("SIZE: 尺寸为已确认的10英寸"))
+        assert any('"已确认"' in v for v in violations)
+
+    def test_normal_copy_not_flagged(self):
+        violations = self.tool.validate(
+            self._listing("FITS STANDARD CLOSET RODS: Hangs in bedrooms and dorm closets")
+        )
+        assert not any("内部流程用语" in v for v in violations)

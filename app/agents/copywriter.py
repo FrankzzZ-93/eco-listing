@@ -5,6 +5,7 @@ import os
 import time
 
 from app.agents.base import ToolBox
+from app.app_settings import get_listing_limits
 from app.config import settings
 from app.errors import EcoListingError
 from app.llm_settings import PROVIDER_OPENAI_COMPATIBLE, get_listing_llm_config, is_configured
@@ -13,20 +14,45 @@ from app.memory.shared_memory import MemoryHelper
 from app.tools import codex_progress
 
 # Hard-maximum fallbacks, mirrored from ComplianceTool so the deterministic
-# safety net stays correct even if a run's length_limits is partial/missing.
+# safety net stays correct even if the configured limits are partial/missing.
 _LIMIT_DEFAULTS = {
-    "title_max_chars": 200,
+    "title_max_chars": 75,
+    "item_highlights_max_chars": 125,
     "bullet_max_chars": 500,
     "bullets_total_max_bytes": 1000,
     "description_max_chars": 2000,
     "st_max_bytes": 249,
 }
 
+_MARKETPLACES = {
+    "amazon.com": "Amazon US",
+    "amazon.com.au": "Amazon AU",
+    "amazon.co.uk": "Amazon UK",
+    "amazon.de": "Amazon DE",
+    "amazon.co.jp": "Amazon JP",
+}
 
-def _resolve_limits(state: ListingState) -> dict:
-    """Effective hard maximums for this run (state overrides, else defaults)."""
-    limits = state.get("length_limits") or {}
+
+def _resolve_limits(limits: dict) -> dict:
+    """Effective hard maximums (configured values, else defaults)."""
     return {k: limits.get(k, default) for k, default in _LIMIT_DEFAULTS.items()}
+
+
+def _as_text(value) -> str:
+    """Coerce a string field the model may return as a list into plain text."""
+    if isinstance(value, list):
+        return " ".join(str(v).strip() for v in value if str(v).strip())
+    return str(value or "")
+
+
+def _as_terms(value) -> list[str]:
+    """Search Terms as a list of phrases (prompts ask for an array; a
+    space-separated string is split so downstream never iterates characters)."""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return value.split()
+    return []
 
 
 def _is_complete_listing(listing: dict) -> bool:
@@ -89,12 +115,17 @@ def _enforce_limits(listing: dict, limits: dict) -> tuple[dict, list[str]]:
     """
     notes: list[str] = []
     title = str(listing.get("title", ""))
+    highlights = _as_text(listing.get("item_highlights"))
     bullets = [str(b) for b in listing.get("bullet_points", [])]
     desc = str(listing.get("description", ""))
 
     if len(title) > limits["title_max_chars"]:
         title = _trim_to_chars(title, limits["title_max_chars"])
         notes.append(f"标题硬裁剪至 {limits['title_max_chars']} 字符")
+
+    if len(highlights) > limits["item_highlights_max_chars"]:
+        highlights = _trim_to_chars(highlights, limits["item_highlights_max_chars"])
+        notes.append(f"Item Highlights 硬裁剪至 {limits['item_highlights_max_chars']} 字符")
 
     for i, b in enumerate(bullets):
         if len(b) > limits["bullet_max_chars"]:
@@ -138,7 +169,13 @@ def _enforce_limits(listing: dict, limits: dict) -> tuple[dict, list[str]]:
         notes.append(f"剔除 {len(bullets) - len(non_empty_bullets)} 条空五点")
         bullets = non_empty_bullets
 
-    corrected = {**listing, "title": title, "bullet_points": bullets, "description": desc}
+    corrected = {
+        **listing,
+        "title": title,
+        "item_highlights": highlights,
+        "bullet_points": bullets,
+        "description": desc,
+    }
     return corrected, notes
 
 
@@ -167,6 +204,28 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         or {}
     )
     attrs_json = json.dumps(attrs, ensure_ascii=False)
+    keywords_json = json.dumps(state["classified_keywords"], ensure_ascii=False)
+
+    # Length rules come from the settings page at generation time (so a
+    # regenerate picks up edited rules); written back to state below.
+    limits = get_listing_limits()
+    eff_limits = _resolve_limits(limits)
+    brand = (state.get("brand_name") or "").strip()
+    alexa_questions = json.dumps(
+        state.get("alex_questions") or state.get("rufus_questions") or [],
+        ensure_ascii=False,
+    )
+    # Variables shared by all three rounds (extra keys are ignored by templates).
+    common_vars = {
+        "brand_name": brand,
+        "brand_in_title_policy": (
+            "Title 首词写品牌" if brand else "未提供品牌：Title 不写品牌，首词直接写核心产品词"
+        ),
+        "marketplace": _MARKETPLACES.get(state.get("site", ""), state.get("site") or "Amazon US"),
+        # No category-rule source yet; stated explicitly rather than left blank.
+        "category_rules": "无",
+        **{k: str(v) for k, v in eff_limits.items()},
+    }
 
     # Round 1: Draft generation (Gemini)
     codex_progress.set_stage(run_id, "初稿生成", 1, 3)
@@ -175,10 +234,9 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         "copywriter",
         "round_1_draft",
         {
+            **common_vars,
             "approved_product_attributes": attrs_json,
-            "classified_keywords": json.dumps(
-                state["classified_keywords"], ensure_ascii=False
-            ),
+            "classified_keywords": keywords_json,
         },
     )
     v1 = await toolbox.llm.call("gemini-pro", p1, llm_config=llm_cfg)
@@ -198,12 +256,13 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
         "copywriter",
         "round_2_alex",
         {
+            **common_vars,
             "draft_v1": json.dumps(v1, ensure_ascii=False),
             "product_attributes": attrs_json,
-            "alex_questions": json.dumps(
-                state.get("alex_questions") or state.get("rufus_questions") or [],
-                ensure_ascii=False,
-            ),
+            "classified_keywords": keywords_json,
+            "alexa_questions": alexa_questions,
+            # v1/v2 templates still use the old variable name.
+            "alex_questions": alexa_questions,
         },
     )
     attachments = [
@@ -222,12 +281,9 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     )
 
     # Round 3: Compliance + length correction with retry loop.
-    # Length limits live in state (seeded from settings at create time) so they
-    # are checkpointed and per-run customizable; any over-limit field is fed
-    # back as a violation and the whole listing is regenerated.
+    # Any over-limit field (limits resolved above) is fed back as a violation
+    # and the whole listing is regenerated.
     rules_text = toolbox.compliance.load_rules()
-    limits = state.get("length_limits") or {}
-    eff_limits = _resolve_limits(state)
     violations_ctx = ""
     final = None
     # Best complete-but-not-yet-clean round-3 draft seen so far; used as a
@@ -248,15 +304,11 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
             "copywriter",
             "round_3_compliance",
             {
+                **common_vars,
                 "draft_v2": json.dumps(v2, ensure_ascii=False),
                 "product_attributes": attrs_json,
                 "compliance_rules": rules_text,
-                "previous_violations": violations_ctx,
-                "title_max_chars": str(eff_limits["title_max_chars"]),
-                "bullet_max_chars": str(eff_limits["bullet_max_chars"]),
-                "bullets_total_max_bytes": str(eff_limits["bullets_total_max_bytes"]),
-                "description_max_chars": str(eff_limits["description_max_chars"]),
-                "st_max_bytes": str(eff_limits["st_max_bytes"]),
+                "previous_violations": violations_ctx or "无",
             },
         )
         v3 = await toolbox.llm.call("claude-sonnet", p3, llm_config=llm_cfg)
@@ -270,11 +322,12 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
 
         listing_for_check = {
             "title": v3.get("title", ""),
+            "item_highlights": _as_text(v3.get("item_highlights")),
             "bullet_points": v3.get("bullet_points", []),
             "description": v3.get("description", ""),
-            "search_terms": v3.get("search_terms", []),
+            "search_terms": _as_terms(v3.get("search_terms")),
         }
-        violations = toolbox.compliance.validate(listing_for_check, limits)
+        violations = toolbox.compliance.validate(listing_for_check, limits, brand=brand)
 
         logs.append(
             MemoryHelper.log_action(
@@ -347,6 +400,7 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
 
     listing = {
         "title": final["title"],
+        "item_highlights": final["item_highlights"],
         "bullet_points": final["bullet_points"],
         "description": final["description"],
     }
@@ -360,7 +414,8 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
                     w.lower() if isinstance(w, str) else w.get("keyword", "").lower()
                 )
     listing_text = (
-        f"{listing['title']} {' '.join(listing['bullet_points'])} {listing['description']}"
+        f"{listing['title']} {listing['item_highlights']} "
+        f"{' '.join(listing['bullet_points'])} {listing['description']}"
     ).lower()
     covered = sum(1 for kw in kw_all if kw in listing_text)
     coverage = covered / len(kw_all) if kw_all else 0
@@ -373,10 +428,11 @@ async def copywriter_node(state: ListingState, toolbox: ToolBox) -> dict:
     codex_progress.clear_stage(run_id)
     return {
         "draft_listing_v1": v1,
-        "st_v1": v1.get("search_terms", []),
+        "st_v1": _as_terms(v1.get("search_terms")),
         "draft_listing_v2": v2,
-        "st_v2": v2.get("search_terms", []),
+        "st_v2": _as_terms(v2.get("search_terms")),
         "final_listing": listing,
-        "st_v3": final.get("search_terms", []),
+        "st_v3": _as_terms(final.get("search_terms")),
+        "length_limits": limits,
         "agent_log": logs,
     }

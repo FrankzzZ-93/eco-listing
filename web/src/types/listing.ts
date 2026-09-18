@@ -1,5 +1,9 @@
+import type { ListingLimits } from './settings';
+
 export interface ListingData {
   title: string;
+  // Absent on listings generated before the v3 prompts.
+  item_highlights?: string;
   bullet_points: string[];
   description: string;
 }
@@ -23,5 +27,7 @@ export interface FinalOutput {
   final_listing: ListingData;
   final_st: string[];
   word_frequency_report?: WordFrequencyReport;
+  // Length rules the copywriter enforced for this listing.
+  length_limits?: Partial<ListingLimits>;
   download?: FinalDownloadLinks;
 }

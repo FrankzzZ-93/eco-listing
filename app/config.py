@@ -30,10 +30,12 @@ class Settings(BaseSettings):
     # rate limits. Set to 1 to fall back to fully sequential scraping.
     research_concurrency: int = 3
 
-    # Listing length limits (Amazon-standard, max-only). Seeded into per-run
-    # ListingState.length_limits at create time and enforced by the copywriter
-    # round-3 regenerate loop via ComplianceTool.validate.
-    title_max_chars: int = 200
+    # Listing length limits. These are the defaults; the live values are edited
+    # on the settings page (app_settings "listing_limits"), read by the
+    # copywriter at generation time and enforced in the round-3 regenerate loop
+    # via ComplianceTool.validate.
+    title_max_chars: int = 75
+    item_highlights_max_chars: int = 125
     bullet_max_chars: int = 500
     # Total byte budget across all five bullets joined by newlines. This is the
     # binding constraint shown in the UI ("XXXX / 1000 字节"); enforce it so the
@@ -43,8 +45,8 @@ class Settings(BaseSettings):
     st_max_bytes: int = 249
     # Soft minimums: fed back as violations to encourage fuller content, but the
     # copywriter loop ships the last draft after retries, so they never block a
-    # run (unlike the hard maximums above). Keep min < max.
-    title_min_chars: int = 120
+    # run (unlike the hard maximums above). Keep min < max; 0 disables a check.
+    title_min_chars: int = 0
     bullets_total_min_bytes: int = 700
     description_min_chars: int = 1500
     # Max whole-listing regenerations when length/compliance violations remain.

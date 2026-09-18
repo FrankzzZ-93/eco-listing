@@ -25,6 +25,7 @@ import {
   LoginOutlined,
   LogoutOutlined,
   CloudDownloadOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import {
   getLlmSettings,
@@ -46,6 +47,7 @@ import type {
   AppSettings,
   ReviewEngine,
   AccountStatus,
+  ListingLimits,
 } from '../types/settings';
 import PageHeader from '../components/layout/PageHeader';
 
@@ -57,6 +59,21 @@ const SITES = [
   { value: 'amazon.co.uk', label: 'Amazon UK (amazon.co.uk)' },
   { value: 'amazon.de', label: 'Amazon DE (amazon.de)' },
   { value: 'amazon.co.jp', label: 'Amazon JP (amazon.co.jp)' },
+];
+
+const LIMIT_MAX_FIELDS: { key: keyof ListingLimits; label: string; unit: string }[] = [
+  { key: 'title_max_chars', label: '标题上限', unit: '字符' },
+  { key: 'item_highlights_max_chars', label: 'Item Highlights 上限', unit: '字符' },
+  { key: 'bullet_max_chars', label: '单条五点上限', unit: '字符' },
+  { key: 'bullets_total_max_bytes', label: '五点合计上限', unit: '字节' },
+  { key: 'description_max_chars', label: '描述上限', unit: '字符' },
+  { key: 'st_max_bytes', label: 'Search Terms 上限', unit: '字节' },
+];
+
+const LIMIT_MIN_FIELDS: { key: keyof ListingLimits; label: string; unit: string }[] = [
+  { key: 'title_min_chars', label: '标题下限', unit: '字符' },
+  { key: 'bullets_total_min_bytes', label: '五点合计下限', unit: '字节' },
+  { key: 'description_min_chars', label: '描述下限', unit: '字符' },
 ];
 
 const ACCOUNT_STATE_META: Record<
@@ -84,6 +101,7 @@ export default function SettingsPage() {
   const [maxPages, setMaxPages] = useState(3);
   const [concurrency, setConcurrency] = useState(3);
   const [codexTimeout, setCodexTimeout] = useState(600);
+  const [limits, setLimits] = useState<ListingLimits | null>(null);
 
   // --- Account login session ---
   const [acc, setAcc] = useState<AccountStatus | null>(null);
@@ -109,6 +127,7 @@ export default function SettingsPage() {
     setMaxPages(s.scrape.scrape_max_review_pages);
     setConcurrency(s.scrape.research_concurrency);
     setCodexTimeout(s.scrape.codex_timeout);
+    setLimits(s.listing_limits);
   };
 
   useEffect(() => {
@@ -149,6 +168,7 @@ export default function SettingsPage() {
           codex_timeout: codexTimeout,
         },
         review_engine: reviewEngine,
+        listing_limits: limits ?? undefined,
       });
       applyAppSettings(saved);
       message.success('配置已保存');
@@ -263,7 +283,7 @@ export default function SettingsPage() {
       <PageHeader
         icon={<ApiOutlined />}
         title="配置中心"
-        subtitle="账号登录、抓取参数与文案模型的统一配置入口。登录在打开的真实 Chrome 窗口中手动完成，登录态记在本地 Chrome 配置里，用于抓取需要登录的竞品评论 / Rufus 问题。"
+        subtitle="账号登录、抓取参数、文案长度规则与文案模型的统一配置入口。登录在打开的真实 Chrome 窗口中手动完成，登录态记在本地 Chrome 配置里，用于抓取需要登录的竞品评论 / Rufus 问题。"
       />
 
       {/* --- Account & login --- */}
@@ -391,6 +411,49 @@ export default function SettingsPage() {
           </div>
         </Form>
       </Card>
+
+      {/* --- Listing length rules --- */}
+      {limits && (
+        <Card title={<Space><FileTextOutlined /> 文案长度规则</Space>} style={{ marginBottom: 16 }}>
+          <Paragraph type="secondary">
+            Listing 文案生成时使用的长度规则：会写进提示词，并在合规校正轮逐项检查，超限会触发重写，仍超限则硬裁剪。修改后在下一次生成 / 重新生成文案时生效。
+          </Paragraph>
+          <Form layout="vertical">
+            <Text strong>上限</Text>
+            <Space size="large" wrap style={{ marginTop: 8 }}>
+              {LIMIT_MAX_FIELDS.map(({ key, label, unit }) => (
+                <Form.Item key={key} label={`${label}（${unit}）`}>
+                  <InputNumber
+                    min={1}
+                    value={limits[key]}
+                    onChange={(v) => setLimits({ ...limits, [key]: v ?? limits[key] })}
+                  />
+                </Form.Item>
+              ))}
+            </Space>
+            <div>
+              <Text strong>下限</Text>
+              <Text type="secondary" style={{ marginLeft: 8 }}>低于下限会要求模型扩写，重试用完后不阻塞；填 0 表示不检查</Text>
+            </div>
+            <Space size="large" wrap style={{ marginTop: 8 }}>
+              {LIMIT_MIN_FIELDS.map(({ key, label, unit }) => (
+                <Form.Item key={key} label={`${label}（${unit}）`}>
+                  <InputNumber
+                    min={0}
+                    value={limits[key]}
+                    onChange={(v) => setLimits({ ...limits, [key]: v ?? 0 })}
+                  />
+                </Form.Item>
+              ))}
+            </Space>
+            <div>
+              <Button type="primary" loading={appSaving} onClick={handleSaveApp}>
+                保存配置
+              </Button>
+            </div>
+          </Form>
+        </Card>
+      )}
 
       {/* --- LLM / model settings --- */}
       <Card title={<Space><ThunderboltOutlined /> 模型设置</Space>} style={{ marginBottom: 16 }}>

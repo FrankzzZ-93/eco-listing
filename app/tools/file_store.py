@@ -93,8 +93,10 @@ class FileStoreTool:
             "# Amazon Listing\n",
             "## Title\n",
             listing.get("title", ""),
-            "\n## Bullet Points\n",
         ]
+        if listing.get("item_highlights"):
+            lines += ["\n## Item Highlights\n", listing["item_highlights"]]
+        lines.append("\n## Bullet Points\n")
         for i, bp in enumerate(listing.get("bullet_points", []), 1):
             lines.append(f"{i}. {bp}")
         lines += [
